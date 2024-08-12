@@ -1,0 +1,1 @@
+Middleware per la simulazione di scenari di traffico in SUMO in base alla chiusura di strade in una rete. 
