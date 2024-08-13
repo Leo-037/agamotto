@@ -9,7 +9,7 @@ from typing import Annotated, Optional, List
 import typer
 from rich import print, progress
 
-from simulation import simulate
+from simulation import simulate, end_simulation
 
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
@@ -17,12 +17,6 @@ if 'SUMO_HOME' in os.environ:
 import matplotlib.pyplot as plt
 
 app = typer.Typer()
-
-SAN_FELICE = '43469298#1'
-VIALE_ALDINI = [
-    # '23288931#6', '23288931#3', '23288931#2', '23288931#1', '23288931#0',
-    '23837911#0', '23837911#1', '23837911#3', '292179033#0', '292179033#3', '292179033#4', '292179033#5'
-]
 
 
 class AvailableData(str, Enum):
@@ -53,6 +47,7 @@ def reference_simulation(program, config, closed_street):
 
 def closed_street_simulation(program, config, delay, closed_street, _progress, task_id, preferred_street):
     return simulate(program, config, delay, closed_street, _progress, task_id,
+                    keep_running=True,
                     street_is_closed=True,
                     preferred_street=preferred_street,
                     log_duration=False,
@@ -79,7 +74,7 @@ def main(config: Path,
     else:
         parameters = graph
 
-    concurrent = 1 if show_gui else 4
+    concurrent = 1 if show_gui else os.cpu_count()
     program = "sumo-gui" if show_gui else "sumo"
     delay = "1" if show_gui else "0"
 
@@ -124,6 +119,10 @@ def main(config: Path,
                             total = update_data["total"]
                             all_progress.update(task_id,
                                                 description=desc, completed=latest, total=total, visible=latest < total)
+
+                    for i in range(concurrent):
+                        executor.submit(end_simulation)
+
             all_progress.update(overall_progress_task,
                                 description="All simulations completed", completed=len(jobs), total=len(jobs))
 

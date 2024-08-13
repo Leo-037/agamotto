@@ -81,9 +81,15 @@ def get_all_neighbouring_edges(edge):
     return list(set(id_list))
 
 
+def end_simulation():
+    if traci.isLoaded():
+        traci.close()
+
+
 def simulate(program, config, delay, closed_edges, _progress, task_id,
              description="",
              street_is_closed=False,
+             keep_running=False,
              recorded_data=[],
              preferred_street=None,
              output_neighbouring_edges=False,
@@ -119,7 +125,10 @@ def simulate(program, config, delay, closed_edges, _progress, task_id,
             command.append("--edgedata-output")
             command.append(f"logs/{task_id}_edgedata.txt")
 
-        traci.start(command, stdout=open(os.devnull, 'w'))
+        if traci.isLoaded():
+            traci.load(command[1:])
+        else:
+            traci.start(command, stdout=open(os.devnull, 'w'))
 
         junction_id = traci.junction.getIDList()[0]
         variables = {
@@ -236,7 +245,9 @@ def simulate(program, config, delay, closed_edges, _progress, task_id,
         for d in computed_data:
             output[d] = computed_data[d]
 
-        traci.close()
+        if not keep_running:
+            end_simulation()
+
     finally:
         sys.stdout = sys.__stdout__
 
