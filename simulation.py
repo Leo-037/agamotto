@@ -1,18 +1,12 @@
 import os
 import sys
+from enum import Enum
 
 import traci
 import traci.constants as tc
 
 RED = [255, 0, 0]
-
-
-def load_streets():
-    streets = {}  # id: name
-    for edge_id in traci.edge.getIDList():
-        streets[edge_id] = traci.edge.getStreetName(edge_id)
-
-    return streets
+NONE = [0, 0, 0, 0]
 
 
 def avoid_edge(veh_id, edge_id):
@@ -86,169 +80,198 @@ def end_simulation():
         traci.close()
 
 
-def simulate(program, config, delay, closed_edges, _progress, task_id,
-             description="",
-             street_is_closed=False,
-             keep_running=False,
-             recorded_data=[],
-             preferred_street=None,
-             output_neighbouring_edges=False,
-             log_duration=False,
-             log_emissions=False,
-             log_statistics=False,
-             log_edgedata=False
-             ):
-    sys.stdout = open(os.devnull, 'w')
+variables = {
+    "CO2": tc.VAR_CO2EMISSION,
+    "CO": tc.VAR_COEMISSION,
+    "HC": tc.VAR_HCEMISSION,
+    "NOx": tc.VAR_NOXEMISSION,
+    "PMx": tc.VAR_PMXEMISSION,
+    "fuel": tc.VAR_FUELCONSUMPTION,
+    "noise": tc.VAR_NOISEEMISSION,
+}
 
-    try:
-        command = [
-            program,
-            '-c', config,
-            '--gui-settings-file', './config/viewSettings.xml',
-            '--delay', str(delay),
-            '--start',
-            '--quit-on-end',
-            '--no-warnings',
-            '--no-step-log',
-        ]
-        if log_duration:
-            command.append("--duration-log.statistics")
-            command.append("--log")
-            command.append(f"logs/{task_id}_logfile.txt")
-        if log_emissions:
-            command.append("--emission-output")
-            command.append(f"logs/{task_id}_emissions.txt")
-        if log_statistics:
-            command.append("--statistic-output")
-            command.append(f"logs/{task_id}_statistics.txt")
-        if log_edgedata:
-            command.append("--edgedata-output")
-            command.append(f"logs/{task_id}_edgedata.txt")
 
-        if traci.isLoaded():
-            traci.load(command[1:])
-        else:
-            traci.start(command, stdout=open(os.devnull, 'w'))
+def prepare_output():
+    return {
+        "CO2": 0,
+        "CO": 0,
+        "HC": 0,
+        "NOx": 0,
+        "PMx": 0,
+        "fuel": 0,
+        "noise": 0,
+    }
 
-        junction_id = traci.junction.getIDList()[0]
-        variables = {
-            "CO2": tc.VAR_CO2EMISSION,
-            "CO": tc.VAR_COEMISSION,
-            "HC": tc.VAR_HCEMISSION,
-            "NOx": tc.VAR_NOXEMISSION,
-            "PMx": tc.VAR_PMXEMISSION,
-            "fuel": tc.VAR_FUELCONSUMPTION,
-            "noise": tc.VAR_NOISEEMISSION,
-        }
-        traci.junction.subscribeContext(
-            junction_id, tc.CMD_GET_VEHICLE_VARIABLE, 1000000,
-            variables.values()
-        )
 
-        computed_data = {
-            "CO2": 0,
-            "CO": 0,
-            "HC": 0,
-            "NOx": 0,
-            "PMx": 0,
-            "fuel": 0,
-            "noise": 0,
-        }
+def start_simulation(config, delay, debug_file, gui=False):
+    sys.stdout = debug_file
+    command = [
+        "sumo-gui" if gui else "sumo",
+        '-c', config,
+        '--gui-settings-file', './config/viewSettings.xml',
+        '--delay', str(delay),
+        '--start',
+        '--quit-on-end',
+        '--no-warnings',
+        '--no-step-log',
+    ]
+    if traci.isLoaded():
+        traci.load(command[1:])  # omit the name of the program because sumo is already running
+    else:
+        traci.start(command, stdout=debug_file)  # starts sumo and pipes all output to provided file
 
-        output = {
-            "id": task_id,
-            "pref_street": preferred_street,
-        }
+    subscribed_junction = traci.junction.getIDList()[0]
+    traci.junction.subscribeContext(subscribed_junction, tc.CMD_GET_VEHICLE_VARIABLE, 1000000, variables.values())
 
-        if preferred_street is not None:
-            preferred_street_name = load_streets().get(preferred_street)
-            output['pref_street_name'] = preferred_street_name
-            task_description = f'{preferred_street_name} ({preferred_street})'
-        else:
-            task_description = description
+    data = {
+        'n_steps': 0,
+        'subscribed_junction': subscribed_junction
+    }
+    return data
 
-        if output_neighbouring_edges:
+
+def step_and_update(output, sim_data):
+    traci.simulationStep()
+
+    sub_results = traci.junction.getContextSubscriptionResults(sim_data['subscribed_junction'])
+    if sub_results:
+        for (k, v) in variables.items():
+            new_values = [d[v] for d in sub_results.values()]
+            new_mean = sum(new_values) / len(new_values)
+            output[k] = (sim_data['n_steps'] * output[k] + new_mean) / (sim_data['n_steps'] + 1)
+
+    sim_data['n_steps'] += 1
+
+
+def get_simulation_output(output, sim_data):
+    output['duration'] = traci.simulation.getParameter("", "device.tripinfo.duration")
+    output['routeLength'] = traci.simulation.getParameter("", "device.tripinfo.routeLength")
+    output['departDelay'] = traci.simulation.getParameter("", "device.tripinfo.departDelay")
+    output['waitingTime'] = traci.simulation.getParameter("", "device.tripinfo.waitingTime")
+    output['speed'] = traci.simulation.getParameter("", "device.tripinfo.speed")
+    output['timeloss'] = traci.simulation.getParameter("", "device.tripinfo.timeLoss")
+    output['teleports'] = traci.simulation.getParameter("", "stats.teleports.total")
+    output['totalTime'] = sim_data['n_steps'] * traci.simulation.getDeltaT()
+
+
+def base_simulation(config, delay, closed_edges, gui=False, debug=False):
+    output = prepare_output()
+
+    with open(f'./logs/debug/base.txt' if debug else os.devnull, 'w') as debug_file:
+        try:
+            sim_data = start_simulation(config, delay, debug_file, gui=gui)
             output['neighbours'] = []
+
             for edge in closed_edges:
                 output['neighbours'].extend(get_all_neighbouring_edges(edge))
 
-        simulated = 0
-        total = 0
-        removed = []
-        affected = []
+            vehicles = set()
+            affected = []
+            wrong = []
 
-        step_length = traci.simulation.getDeltaT()
-        n_steps = 0
+            while traci.simulation.getMinExpectedNumber() > 0:
+                for vehId in get_departed():
+                    vehicles.add(vehId)
+                    route = traci.vehicle.getRoute(vehId)
 
-        if street_is_closed:
-            for edge in closed_edges:
-                for lane in range(traci.edge.getLaneNumber(edge)):
-                    traci.lane.setAllowed(f'{edge}_{lane}', "authority")  # close the edge to regular traffic
+                    for edge in closed_edges:
+                        if vehId in affected or vehId in wrong:
+                            # ignore remaining edges if vehicle was already marked as affected
+                            break
 
-        while traci.simulation.getMinExpectedNumber() > 0:
-            if street_is_closed:
-                for edge in closed_edges:
-                    for vehId in get_departed():
-                        if vehId in removed:
-                            continue
+                        if route[0] == edge or route[-1] == edge:
+                            # vehicle should be removed because route starts or ends with a closed edge
+                            wrong.append(vehId)
+                        elif edge in route:
+                            affected.append(vehId)
 
-                        route = traci.vehicle.getRoute(vehId)
-                        if edge in route:
-                            if route[0] == edge:
-                                # print(f"Removed vehicle {vehId} because route started with closed edge")
-                                traci.vehicle.remove(vehId)
-                                removed.append(vehId)
-                            elif route[-1] == edge:
-                                # print(f"Removed vehicle {vehId} because route ended with closed edge")
-                                traci.vehicle.remove(vehId)
-                                removed.append(vehId)
-                            else:
-                                set_vehicle_color(vehId, RED)
-                                prefer_edge(vehId, preferred_street)
+                step_and_update(output, sim_data)
 
-                                if vehId not in affected:
-                                    affected.append(vehId)
+            get_simulation_output(output, sim_data)
 
-                                # traci.vehicle.setVia(vehId, preferred_street)
-                                # traci.vehicle.rerouteTraveltime(vehId)
-                                # avoid_edge(vehId, edge)
-                        else:
-                            if vehId not in affected:
-                                set_vehicle_color(vehId, [0, 0, 0, 0])  # draws only cars affected by street closure
-
-            traci.simulationStep()
-
-            sub_results = traci.junction.getContextSubscriptionResults(junction_id)
-            if sub_results:
-                for (k, v) in variables.items():
-                    new_values = [d[v] for d in sub_results.values()]
-                    new_mean = sum(new_values) / len(new_values)
-                    computed_data[k] = (n_steps * computed_data[k] + new_mean) / (n_steps + 1)
-
-            n_steps += 1
-
-            simulated += traci.simulation.getArrivedNumber()
-            total += traci.simulation.getLoadedNumber()
-            if _progress is not None and task_id is not None:
-                _progress[task_id] = {"description": task_description,
-                                      "progress": simulated, "total": total}
-
-        output["duration"] = traci.simulation.getParameter("", "device.tripinfo.duration")
-        output['routeLength'] = traci.simulation.getParameter("", "device.tripinfo.routeLength")
-        output['departDelay'] = traci.simulation.getParameter("", "device.tripinfo.departDelay")
-        output['waitingTime'] = traci.simulation.getParameter("", "device.tripinfo.waitingTime")
-        output['speed'] = traci.simulation.getParameter("", "device.tripinfo.speed")
-        output['timeloss'] = traci.simulation.getParameter("", "device.tripinfo.timeLoss")
-        output['teleports'] = traci.simulation.getParameter("", "stats.teleports.total")
-        output['totalTime'] = n_steps * step_length
-
-        for d in computed_data:
-            output[d] = computed_data[d]
-
-        if not keep_running:
             end_simulation()
 
-    finally:
-        sys.stdout = sys.__stdout__
+            output['affected'] = affected
+            output['wrong'] = wrong
+            output['total'] = len(vehicles)
+
+        finally:
+            sys.stdout = sys.__stdout__
 
     return output
+
+
+def simulate(gui: bool, config, delay, closed_edges, preferred_street, affected, wrong,
+             _progress, task_id,
+             debug=False,
+             keep_running=False,
+             log_duration=False, log_emissions=False, log_statistics=False, log_edgedata=False
+             ):
+    output = prepare_output()
+    output["id"] = task_id
+
+    with open(f'./logs/debug/{task_id}.txt' if debug else os.devnull, 'w') as debug_file:
+        try:
+            sim_data = start_simulation(config, delay, debug_file, gui=gui)
+
+            preferred_street_name = traci.edge.getStreetName(preferred_street)
+            output["pref_street"] = preferred_street
+            output['pref_street_name'] = preferred_street_name
+            task_description = f'{preferred_street_name} ({preferred_street})'
+
+            # close the streets in the first step
+            for edge in closed_edges:
+                traci.edge.setAllowed(edge, 'authority')  # closed to regular traffic
+
+            simulated = 0
+
+            while traci.simulation.getMinExpectedNumber() > 0:
+                for vehId in get_departed():
+                    if vehId in affected:
+                        set_vehicle_color(vehId, RED)
+                        prefer_edge(vehId, preferred_street)
+                        # traci.vehicle.setVia(vehId, preferred_street)
+                        # traci.vehicle.rerouteTraveltime(vehId)
+                        # avoid_edge(vehId, edge)
+                    elif vehId in wrong:
+                        traci.vehicle.remove(vehId)
+                    else:
+                        # hides cars not affected by street closure
+                        set_vehicle_color(vehId, NONE)
+
+                step_and_update(output, sim_data)
+
+                simulated += traci.simulation.getArrivedNumber()
+                _progress[task_id] = {"description": task_description,
+                                      "progress": simulated}
+
+            get_simulation_output(output, sim_data)
+
+            if not keep_running:
+                end_simulation()
+
+        finally:
+            sys.stdout = sys.__stdout__
+
+    return output
+
+
+class AvailableData(str, Enum):
+    duration = 'duration'
+    routeLength = 'routeLength'
+    departDelay = 'departDelay'
+    waitingTime = 'waitingTime'
+    speed = 'speed'
+    timeloss = 'timeloss'
+    totalTime = 'totalTime'
+    teleports = 'teleports'
+    CO2 = "CO2"
+    CO = "CO"
+    HC = "HC"
+    PMx = "PMx"
+    NOx = "NOx"
+    fuel = "fuel"
+    noise = "noise"
+
+    def __str__(self):
+        return self.name
