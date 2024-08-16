@@ -5,8 +5,12 @@ from enum import Enum
 import traci
 import traci.constants as tc
 
+ORANGE = [128, 0, 0]
 RED = [255, 0, 0]
 NONE = [0, 0, 0, 0]
+CLOSED = 0
+PREFERRED = 1
+SELECTED = 2
 
 
 def avoid_edge(veh_id, edge_id):
@@ -37,6 +41,18 @@ def get_departed(filter_ids=None):
 
 def set_vehicle_color(veh_id, color):
     traci.vehicle.setColor(veh_id, color)
+
+
+def mark_edge_closed(edge_id):
+    traci.edge.setParameter(edge_id, "agamotto", CLOSED)
+
+
+def mark_edge_preferred(edge_id):
+    traci.edge.setParameter(edge_id, "agamotto", PREFERRED)
+
+
+def mark_edge_selected(edge_id):
+    traci.edge.setParameter(edge_id, "agamotto", SELECTED)
 
 
 def get_neighbouring_edges(edge_id, skip=None):
@@ -103,18 +119,19 @@ def prepare_output():
     }
 
 
-def start_simulation(config, delay, debug_file, gui=False):
+def start_simulation(config, delay, debug_file, gui=False, auto=True):
     sys.stdout = debug_file
     command = [
         "sumo-gui" if gui else "sumo",
         '-c', config,
-        '--gui-settings-file', './config/viewSettings.xml',
+        '--gui-settings-file', './config/agamotto.xml',
         '--delay', str(delay),
-        '--start',
-        '--quit-on-end',
         '--no-warnings',
         '--no-step-log',
     ]
+    if auto:
+        command.append('--start')
+        command.append('--quit-on-end')
     if traci.isLoaded():
         traci.load(command[1:])  # omit the name of the program because sumo is already running
     else:
@@ -160,10 +177,6 @@ def base_simulation(config, delay, closed_edges, gui=False, debug=False):
     with open(f'./logs/debug/base.txt' if debug else os.devnull, 'w') as debug_file:
         try:
             sim_data = start_simulation(config, delay, debug_file, gui=gui)
-            output['neighbours'] = []
-
-            for edge in closed_edges:
-                output['neighbours'].extend(get_all_neighbouring_edges(edge))
 
             vehicles = set()
             affected = []
@@ -183,6 +196,7 @@ def base_simulation(config, delay, closed_edges, gui=False, debug=False):
                             # vehicle should be removed because route starts or ends with a closed edge
                             wrong.append(vehId)
                         elif edge in route:
+                            set_vehicle_color(vehId, RED)
                             affected.append(vehId)
 
                 step_and_update(output, sim_data)
@@ -201,10 +215,8 @@ def base_simulation(config, delay, closed_edges, gui=False, debug=False):
     return output
 
 
-def simulate(gui: bool, config, delay, closed_edges, preferred_street, affected, wrong,
-             _progress, task_id,
-             debug=False,
-             keep_running=False,
+def simulate(gui: bool, config, delay, closed_edges, environment, affected, wrong, task_id,
+             _progress=None, debug=False, keep_running=False, auto=True,
              log_duration=False, log_emissions=False, log_statistics=False, log_edgedata=False
              ):
     output = prepare_output()
@@ -212,38 +224,55 @@ def simulate(gui: bool, config, delay, closed_edges, preferred_street, affected,
 
     with open(f'./logs/debug/{task_id}.txt' if debug else os.devnull, 'w') as debug_file:
         try:
-            sim_data = start_simulation(config, delay, debug_file, gui=gui)
+            sim_data = start_simulation(config, delay, debug_file, gui=gui, auto=auto)
 
-            preferred_street_name = traci.edge.getStreetName(preferred_street)
-            output["pref_street"] = preferred_street
-            output['pref_street_name'] = preferred_street_name
-            task_description = f'{preferred_street_name} ({preferred_street})'
+            output["pref_street"] = ""
+            output['pref_street_name'] = ""
+            task_description = ""
+            for redirection in environment:
+                preferred_street = redirection['destination']
+                preferred_street_name = traci.edge.getStreetName(preferred_street)
+
+                output["pref_street"] += preferred_street + " "
+                output['pref_street_name'] += preferred_street_name + " "
+                task_description += f'{preferred_street} '
+                if gui:
+                    mark_edge_selected(redirection['origin'])
+                    mark_edge_preferred(preferred_street)
 
             # close the streets in the first step
             for edge in closed_edges:
                 traci.edge.setAllowed(edge, 'authority')  # closed to regular traffic
+                if gui:
+                    mark_edge_closed(edge)
 
             simulated = 0
 
             while traci.simulation.getMinExpectedNumber() > 0:
                 for vehId in get_departed():
                     if vehId in affected:
-                        set_vehicle_color(vehId, RED)
-                        prefer_edge(vehId, preferred_street)
-                        # traci.vehicle.setVia(vehId, preferred_street)
-                        # traci.vehicle.rerouteTraveltime(vehId)
-                        # avoid_edge(vehId, edge)
+                        if gui:
+                            set_vehicle_color(vehId, ORANGE)
+                        route = traci.vehicle.getRoute(vehId)
+                        for redirection in environment:
+                            if redirection['origin'] in route:
+                                if gui:
+                                    set_vehicle_color(vehId, RED)
+                                traci.vehicle.setVia(vehId, redirection['destination'])
+                                traci.vehicle.rerouteTraveltime(vehId)
+                                break
                     elif vehId in wrong:
                         traci.vehicle.remove(vehId)
                     else:
                         # hides cars not affected by street closure
-                        set_vehicle_color(vehId, NONE)
+                        if gui:
+                            set_vehicle_color(vehId, NONE)
 
                 step_and_update(output, sim_data)
 
                 simulated += traci.simulation.getArrivedNumber()
-                _progress[task_id] = {"description": task_description,
-                                      "progress": simulated}
+                if _progress is not None:
+                    _progress[task_id] = {"progress": simulated}
 
             get_simulation_output(output, sim_data)
 

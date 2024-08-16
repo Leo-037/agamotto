@@ -1,8 +1,8 @@
 <viewsettings>
-    <scheme name="Custom">
+    <scheme name="agamotto">
         <opengl dither="0" fps="0" drawBoundaries="0" disableDottedContours="0" forceDrawRectangleSelection="0" geometryIndices_show="0" geometryIndices_size="50.00" geometryIndices_color="255,0,128" geometryIndices_bgColor="128,0,0,0" geometryIndices_constantSize="1" geometryIndices_onlySelected="0"/>
-        <background backgroundColor="51,128,51" showGrid="0" gridXSize="100.00" gridYSize="100.00"/>
-        <edges laneEdgeMode="0" scaleMode="0" laneShowBorders="1" showBikeMarkings="0" showLinkDecals="1" realisticLinkRules="0" showLinkRules="1" showRails="1" secondaryShape="0" hideConnectors="1" widthExaggeration="1.00" minSize="0.00" showDirection="1" showSublanes="0" spreadSuperposed="0" disableHideByZoom="0" edgeParam="EDGE_KEY" laneParam="LANE_KEY" vehicleParam="PARAM_NUMERICAL" vehicleScaleParam="PARAM_NUMERICAL" vehicleTextParam="PARAM_TEXT" edgeData="speed" edgeDataID="" edgeDataScaling="" edgeValueHideCheck="0" edgeValueHideThreshold="0.00" edgeValueHideCheck2="0" edgeValueHideThreshold2="200.00"
+        <background backgroundColor="white" showGrid="0" gridXSize="100.00" gridYSize="100.00"/>
+        <edges laneEdgeMode="31" scaleMode="0" laneShowBorders="1" showBikeMarkings="0" showLinkDecals="1" realisticLinkRules="0" showLinkRules="1" showRails="1" secondaryShape="0" hideConnectors="1" widthExaggeration="1.00" minSize="0.00" showDirection="1" showSublanes="0" spreadSuperposed="0" disableHideByZoom="0" edgeParam="agamotto" laneParam="LANE_KEY" vehicleParam="PARAM_NUMERICAL" vehicleScaleParam="PARAM_NUMERICAL" vehicleTextParam="PARAM_TEXT" edgeData="speed" edgeDataID="" edgeDataScaling="" edgeValueHideCheck="0" edgeValueHideThreshold="0.00" edgeValueHideCheck2="0" edgeValueHideThreshold2="200.00"
                 edgeName_show="0" edgeName_size="33.00" edgeName_color="orange" edgeName_bgColor="128,0,0,0" edgeName_constantSize="0" edgeName_onlySelected="0"
                 internalEdgeName_show="0" internalEdgeName_size="45.00" internalEdgeName_color="128,64,0" internalEdgeName_bgColor="128,0,0,0" internalEdgeName_constantSize="1" internalEdgeName_onlySelected="0"
                 cwaEdgeName_show="0" cwaEdgeName_size="60.00" cwaEdgeName_color="magenta" cwaEdgeName_bgColor="128,0,0,0" cwaEdgeName_constantSize="1" cwaEdgeName_onlySelected="0"
@@ -65,13 +65,13 @@
                 <entry color="blue" threshold="5.00"/>
             </colorScheme>
             <colorScheme name="by CO2 emissions" interpolated="1">
-                <entry color="red" threshold="0.00"/>
-                <entry color="orange" threshold="108.55"/>
-                <entry color="yellow" threshold="217.11"/>
-                <entry color="green" threshold="325.66"/>
-                <entry color="cyan" threshold="434.21"/>
-                <entry color="blue" threshold="542.77"/>
-                <entry color="magenta" threshold="651.32"/>
+                <entry color="grey" threshold="0.00"/>
+                <entry color="cyan" threshold="450.00"/>
+                <entry color="green" threshold="900.00"/>
+                <entry color="yellow" threshold="1350.00"/>
+                <entry color="orange" threshold="1800.00"/>
+                <entry color="red" threshold="2250.00"/>
+                <entry color="magenta" threshold="3000.00"/>
             </colorScheme>
             <colorScheme name="by CO emissions" interpolated="1">
                 <entry color="grey" threshold="0.00"/>
@@ -128,13 +128,8 @@
                 <entry color="magenta" threshold="2.40"/>
             </colorScheme>
             <colorScheme name="by global travel time" interpolated="1">
-                <entry color="red" threshold="-1.00"/>
-                <entry color="orange" threshold="-1.00"/>
-                <entry color="yellow" threshold="-1.00"/>
-                <entry color="green" threshold="-1.00"/>
-                <entry color="cyan" threshold="-1.00"/>
-                <entry color="blue" threshold="-1.00"/>
-                <entry color="magenta" threshold="-1.00"/>
+                <entry color="green" threshold="0.00"/>
+                <entry color="red" threshold="100.00"/>
             </colorScheme>
             <colorScheme name="by global speed percentage" interpolated="1">
                 <entry color="red" threshold="0.00"/>
@@ -198,12 +193,11 @@
             </colorScheme>
             <colorScheme name="by average speed" interpolated="1">
                 <entry color="red" threshold="0.00"/>
-                <entry color="orange" threshold="2.39"/>
-                <entry color="yellow" threshold="4.77"/>
-                <entry color="green" threshold="7.16"/>
-                <entry color="cyan" threshold="9.54"/>
-                <entry color="blue" threshold="11.93"/>
-                <entry color="magenta" threshold="14.31"/>
+                <entry color="yellow" threshold="8.33"/>
+                <entry color="green" threshold="15.28"/>
+                <entry color="cyan" threshold="22.22"/>
+                <entry color="blue" threshold="33.33"/>
+                <entry color="magenta" threshold="41.67"/>
             </colorScheme>
             <colorScheme name="by average relative speed " interpolated="1">
                 <entry color="red" threshold="0.00"/>
@@ -214,13 +208,12 @@
                 <entry color="magenta" threshold="1.25"/>
             </colorScheme>
             <colorScheme name="by routing device assumed speed " interpolated="1">
-                <entry color="red" threshold="0.76"/>
-                <entry color="orange" threshold="2.95"/>
-                <entry color="yellow" threshold="5.14"/>
-                <entry color="green" threshold="7.33"/>
-                <entry color="cyan" threshold="9.51"/>
-                <entry color="blue" threshold="11.70"/>
-                <entry color="magenta" threshold="13.89"/>
+                <entry color="red" threshold="0.00"/>
+                <entry color="yellow" threshold="8.33"/>
+                <entry color="green" threshold="15.28"/>
+                <entry color="cyan" threshold="22.22"/>
+                <entry color="blue" threshold="33.33"/>
+                <entry color="magenta" threshold="41.67"/>
             </colorScheme>
             <colorScheme name="by electricity consumption" interpolated="1">
                 <entry color="green" threshold="0.00"/>
@@ -241,7 +234,10 @@
                 <entry color="204,204,204" name="no TAZ"/>
             </colorScheme>
             <colorScheme name="by param (numerical, streetwise)" interpolated="1">
-                <entry color="204,204,204" threshold="0.00"/>
+                <entry color="218,0,0" threshold="0.00"/>
+                <entry color="22,255,0" threshold="1.00"/>
+                <entry color="99,156,255,198" threshold="2.00"/>
+                <entry color="black" threshold="3.00"/>
             </colorScheme>
             <colorScheme name="by param (numerical, lanewise)" interpolated="1">
                 <entry color="204,204,204" threshold="0.00"/>
@@ -989,7 +985,7 @@
                    tlsPhaseIndex_show="0" tlsPhaseIndex_size="150.00" tlsPhaseIndex_color="yellow" tlsPhaseIndex_bgColor="128,0,0,0" tlsPhaseIndex_constantSize="1" tlsPhaseIndex_onlySelected="0" tlsPhaseName_show="0" tlsPhaseName_size="150.00" tlsPhaseName_color="orange" tlsPhaseName_bgColor="128,0,0,0" tlsPhaseName_constantSize="1" tlsPhaseName_onlySelected="0"
                    showLane2Lane="0" drawShape="1" drawCrossingsAndWalkingareas="1" junction_minSize="1.00" junction_exaggeration="1.00" junction_constantSize="0" junction_constantSizeSelected="0">
             <colorScheme name="uniform">
-                <entry color="black"/>
+                <entry color="46,46,46"/>
                 <entry color="150,200,200" name="waterway"/>
                 <entry color="invisible" name="railway"/>
                 <entry color="200,240,240" name="airway"/>
