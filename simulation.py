@@ -5,12 +5,19 @@ from enum import Enum
 import traci
 import traci.constants as tc
 
-ORANGE = [128, 0, 0]
+# colors
+ORANGE = [255, 170, 0]
 RED = [255, 0, 0]
 NONE = [0, 0, 0, 0]
+
+# edge types
 CLOSED = 0
 PREFERRED = 1
 SELECTED = 2
+
+# street closed notification strategy
+NAVIGATION = 0
+SIGN = 1
 
 
 def avoid_edge(veh_id, edge_id):
@@ -178,26 +185,32 @@ def base_simulation(config, delay, closed_edges, gui=False, debug=False):
         try:
             sim_data = start_simulation(config, delay, debug_file, gui=gui)
 
-            vehicles = set()
+            vehicles = []
             affected = []
             wrong = []
 
+            closed_edges = set(closed_edges)
+
             while traci.simulation.getMinExpectedNumber() > 0:
                 for vehId in get_departed():
-                    vehicles.add(vehId)
+                    vehicles.append(vehId)
                     route = traci.vehicle.getRoute(vehId)
 
-                    for edge in closed_edges:
-                        if vehId in affected or vehId in wrong:
-                            # ignore remaining edges if vehicle was already marked as affected
-                            break
+                    if set(route).intersection(closed_edges):
+                        set_vehicle_color(vehId, ORANGE)
+                        affected.append(vehId)
 
-                        if route[0] == edge or route[-1] == edge:
-                            # vehicle should be removed because route starts or ends with a closed edge
-                            wrong.append(vehId)
-                        elif edge in route:
-                            set_vehicle_color(vehId, RED)
-                            affected.append(vehId)
+                    # for edge in closed_edges:
+                    #     if vehId in affected or vehId in wrong:
+                    #         # ignore remaining edges if vehicle was already marked as affected
+                    #         break
+                    #
+                    #     if route[0] == edge or route[-1] == edge:
+                    #         # vehicle should be removed because route starts or ends with a closed edge
+                    #         wrong.append(vehId)
+                    #     elif edge in route:
+                    #         set_vehicle_color(vehId, RED)
+                    #         affected.append(vehId)
 
                 step_and_update(output, sim_data)
 
@@ -219,6 +232,9 @@ def simulate(gui: bool, config, delay, closed_edges, environment, affected, wron
              _progress=None, debug=False, keep_running=False, auto=True,
              log_duration=False, log_emissions=False, log_statistics=False, log_edgedata=False
              ):
+    strategy = environment['strategy']
+    combination = environment['combination']
+
     output = prepare_output()
     output["id"] = task_id
 
@@ -229,7 +245,7 @@ def simulate(gui: bool, config, delay, closed_edges, environment, affected, wron
             output["pref_street"] = ""
             output['pref_street_name'] = ""
             task_description = ""
-            for redirection in environment:
+            for redirection in combination:
                 preferred_street = redirection['destination']
                 preferred_street_name = traci.edge.getStreetName(preferred_street)
 
@@ -240,33 +256,54 @@ def simulate(gui: bool, config, delay, closed_edges, environment, affected, wron
                     mark_edge_selected(redirection['origin'])
                     mark_edge_preferred(preferred_street)
 
-            # close the streets in the first step
             for edge in closed_edges:
-                traci.edge.setAllowed(edge, 'authority')  # closed to regular traffic
+                if strategy == NAVIGATION:
+                    # close the streets in the first step if all vehicles know about street closure
+                    traci.edge.setAllowed(edge, 'authority')  # closed to regular traffic
                 if gui:
                     mark_edge_closed(edge)
 
             simulated = 0
 
+            to_notify = []
+
             while traci.simulation.getMinExpectedNumber() > 0:
                 for vehId in get_departed():
-                    if vehId in affected:
+                    if vehId in affected:  # route contains a closed edge
                         if gui:
                             set_vehicle_color(vehId, ORANGE)
-                        route = traci.vehicle.getRoute(vehId)
-                        for redirection in environment:
-                            if redirection['origin'] in route:
+
+                        if strategy == NAVIGATION:
+                            for redirection in combination:
+                                route = traci.vehicle.getRoute(vehId)
+                                if redirection['origin'] in route:
+                                    if gui:
+                                        set_vehicle_color(vehId, RED)
+                                    traci.vehicle.setVia(vehId, redirection['destination'])
+                                    traci.vehicle.rerouteTraveltime(vehId)
+                                    break
+                        elif strategy == SIGN:
+                            to_notify.append(vehId)
+                    else:
+                        if gui:
+                            # hides cars not affected by street closure
+                            set_vehicle_color(vehId, NONE)
+
+                if strategy == SIGN:
+                    for redirection in combination:
+                        for vehId in traci.edge.getLastStepVehicleIDs(redirection['origin']):
+                            # TODO: this doesn't account for vehicles whose first edge is an origin/closed edge
+                            if vehId in to_notify:
                                 if gui:
                                     set_vehicle_color(vehId, RED)
+                                avoid_multiple(vehId, closed_edges)
                                 traci.vehicle.setVia(vehId, redirection['destination'])
                                 traci.vehicle.rerouteTraveltime(vehId)
+                                to_notify.remove(vehId)
                                 break
-                    elif vehId in wrong:
-                        traci.vehicle.remove(vehId)
-                    else:
-                        # hides cars not affected by street closure
-                        if gui:
-                            set_vehicle_color(vehId, NONE)
+
+                # TODO: for both strategies, check the route of each vehicle until no redirection is needed ?
+                # TODO: change simulation management by keeping track of all vehicles currently in simulation ?
 
                 step_and_update(output, sim_data)
 
