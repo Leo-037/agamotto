@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 import sys
 from enum import Enum
@@ -126,8 +127,7 @@ def prepare_output():
     }
 
 
-def start_simulation(config, delay, debug_file, gui=False, auto=True):
-    sys.stdout = debug_file
+def get_sumo_command(config, delay, gui=False, auto=True):
     command = [
         "sumo-gui" if gui else "sumo",
         '-c', config,
@@ -139,6 +139,14 @@ def start_simulation(config, delay, debug_file, gui=False, auto=True):
     if auto:
         command.append('--start')
         command.append('--quit-on-end')
+    return command
+
+
+def start_simulation(config, delay, debug_file, gui=False, auto=True):
+    sys.stdout = debug_file
+
+    command = get_sumo_command(config, delay, gui, auto)
+
     if traci.isLoaded():
         traci.load(command[1:])  # omit the name of the program because sumo is already running
     else:
@@ -170,12 +178,49 @@ def step_and_update(output, sim_data):
 def get_simulation_output(output, sim_data):
     output['duration'] = traci.simulation.getParameter("", "device.tripinfo.duration")
     output['routeLength'] = traci.simulation.getParameter("", "device.tripinfo.routeLength")
-    output['departDelay'] = traci.simulation.getParameter("", "device.tripinfo.departDelay")
     output['waitingTime'] = traci.simulation.getParameter("", "device.tripinfo.waitingTime")
     output['speed'] = traci.simulation.getParameter("", "device.tripinfo.speed")
     output['timeloss'] = traci.simulation.getParameter("", "device.tripinfo.timeLoss")
-    output['teleports'] = traci.simulation.getParameter("", "stats.teleports.total")
     output['totalTime'] = sim_data['n_steps'] * traci.simulation.getDeltaT()
+
+
+def batch_simulation(config, delay, closed_edges, environments, thread_id, first_task_id,
+                     _progress=None, gui=False, debug=False):
+    sumo_command = get_sumo_command(config, delay, gui, auto=True)
+    log_folder = f'./logs/{datetime.now().strftime('%Y-%m-%d_%H:%M')}'
+    if debug:
+        file_name = f'{log_folder}/sumo/{thread_id}.txt'
+        os.makedirs(os.path.dirname(file_name), exist_ok=True)
+        sumo_debug = open(file_name, 'w')
+    else:
+        sumo_debug = open(os.devnull, 'w')
+
+    sys.stdout = sumo_debug
+    traci.start(sumo_command, stdout=sumo_debug)  # starts sumo and pipes all output to provided file
+
+    task_id = first_task_id
+
+    result = {
+        task_id: simulate(0, task_id, thread_id, closed_edges, environments[0], gui, debug, log_folder, _progress)
+    }
+
+    for i in range(1, len(environments)):
+        task_id += 1
+        traci.load(sumo_command[1:])
+        result[task_id] = simulate(i, task_id, thread_id, closed_edges, environments[i], gui, debug, log_folder,
+                                   _progress)
+
+    end_simulation()
+    sys.stdout = sys.__stdout__
+
+    return result
+
+
+def show_simulation(config, delay, closed_edges, environment):
+    command = get_sumo_command(config, delay, gui=True, auto=False)
+    traci.start(command)
+    simulate(0, 0, 0, closed_edges, environment, gui=True, debug=False)
+    end_simulation()
 
 
 def base_simulation(config, delay, closed_edges, gui=False, debug=False):
@@ -218,8 +263,6 @@ def base_simulation(config, delay, closed_edges, gui=False, debug=False):
 
             end_simulation()
 
-            output['affected'] = affected
-            output['wrong'] = wrong
             output['total'] = len(vehicles)
 
         finally:
@@ -228,19 +271,31 @@ def base_simulation(config, delay, closed_edges, gui=False, debug=False):
     return output
 
 
-def simulate(gui: bool, config, delay, closed_edges, environment, affected, wrong, task_id,
-             _progress=None, debug=False, keep_running=False, auto=True,
-             log_duration=False, log_emissions=False, log_statistics=False, log_edgedata=False
-             ):
+def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, log_folder=None,
+             _progress=None):
     strategy = environment['strategy']
     combination = environment['combination']
 
     output = prepare_output()
     output["id"] = task_id
 
-    with open(f'./logs/debug/{task_id}.txt' if debug else os.devnull, 'w') as debug_file:
+    if debug:
+        file_name = f'{log_folder}/debug/{task_id}.txt'
+        os.makedirs(os.path.dirname(file_name), exist_ok=True)
+    else:
+        file_name = os.devnull
+
+    with open(file_name, 'w') as debug_file:
+        sys.stdout = debug_file
         try:
-            sim_data = start_simulation(config, delay, debug_file, gui=gui, auto=auto)
+            subscribed_junction = traci.junction.getIDList()[0]
+            traci.junction.subscribeContext(subscribed_junction, tc.CMD_GET_VEHICLE_VARIABLE, 1000000,
+                                            variables.values())
+
+            sim_data = {
+                'n_steps': 0,
+                'subscribed_junction': subscribed_junction
+            }
 
             output["pref_street"] = ""
             output['pref_street_name'] = ""
@@ -269,13 +324,13 @@ def simulate(gui: bool, config, delay, closed_edges, environment, affected, wron
 
             while traci.simulation.getMinExpectedNumber() > 0:
                 for vehId in get_departed():
-                    if vehId in affected:  # route contains a closed edge
+                    route = traci.vehicle.getRoute(vehId)
+                    if set(route).intersection(closed_edges):  # route contains a closed edge
                         if gui:
                             set_vehicle_color(vehId, ORANGE)
 
                         if strategy == NAVIGATION:
                             for redirection in combination:
-                                route = traci.vehicle.getRoute(vehId)
                                 if redirection['origin'] in route:
                                     if gui:
                                         set_vehicle_color(vehId, RED)
@@ -307,14 +362,15 @@ def simulate(gui: bool, config, delay, closed_edges, environment, affected, wron
 
                 step_and_update(output, sim_data)
 
-                simulated += traci.simulation.getArrivedNumber()
                 if _progress is not None:
-                    _progress[task_id] = {"progress": simulated}
+                    simulated += traci.simulation.getArrivedNumber()
+                    _progress[thread_id] = {
+                        'thread_progress': index + 1,
+                        'task': task_id,
+                        'task_progress': simulated,
+                    }
 
             get_simulation_output(output, sim_data)
-
-            if not keep_running:
-                end_simulation()
 
         finally:
             sys.stdout = sys.__stdout__
@@ -325,12 +381,10 @@ def simulate(gui: bool, config, delay, closed_edges, environment, affected, wron
 class AvailableData(str, Enum):
     duration = 'duration'
     routeLength = 'routeLength'
-    departDelay = 'departDelay'
     waitingTime = 'waitingTime'
     speed = 'speed'
     timeloss = 'timeloss'
     totalTime = 'totalTime'
-    teleports = 'teleports'
     CO2 = "CO2"
     CO = "CO"
     HC = "HC"
