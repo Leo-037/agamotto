@@ -63,42 +63,6 @@ def mark_edge_selected(edge_id):
     traci.edge.setParameter(edge_id, "agamotto", SELECTED)
 
 
-def get_neighbouring_edges(edge_id, skip=None):
-    if skip is None:
-        skip = []
-
-    id_list = []
-
-    origin = traci.edge.getFromJunction(edge_id)
-    destination = traci.edge.getToJunction(edge_id)
-
-    id_list.extend(
-        edge for edge in traci.junction.getIncomingEdges(origin) if
-        'cluster' not in edge and '_' not in edge and edge not in skip)
-    id_list.extend(
-        edge for edge in traci.junction.getOutgoingEdges(origin) if
-        'cluster' not in edge and '_' not in edge and edge not in skip)
-    id_list.extend(
-        edge for edge in traci.junction.getIncomingEdges(destination) if
-        'cluster' not in edge and '_' not in edge and edge not in skip)
-    id_list.extend(
-        edge for edge in traci.junction.getOutgoingEdges(destination) if
-        'cluster' not in edge and '_' not in edge and edge not in skip)
-
-    return id_list
-
-
-def get_all_neighbouring_edges(edge):
-    id_list = []
-    if isinstance(edge, list):
-        for e in edge:
-            id_list.extend(get_neighbouring_edges(e, skip=id_list))
-    else:
-        id_list = get_neighbouring_edges(edge)
-
-    return list(set(id_list))
-
-
 def end_simulation():
     if traci.isLoaded():
         traci.close()
@@ -271,6 +235,31 @@ def base_simulation(config, delay, closed_edges, gui=False, debug=False):
     return output
 
 
+def reroute_until_correct(veh, combination, debug=False):
+    attempts = 1
+    correct = False
+    while not correct:
+        if debug:
+            print(f'Attempt #{attempts} to route vehicle {veh}')
+        correct = True
+        route = traci.vehicle.getRoute(veh)
+        for redirection in combination:
+            if redirection['origin'] in route:
+                if redirection['destination'] not in route:
+                    traci.vehicle.setVia(veh, redirection['destination'])
+                    traci.vehicle.rerouteTraveltime(veh)
+                    correct = False  # route will be checked again
+                    break
+
+        if attempts > len(combination) * 2:
+            # give up after a while: there's no way to enforce all destinations, keep current route
+            if debug:
+                print(f'Stopping after attempt #{attempts} to route vehicle {veh}: no way to enforce combination')
+            correct = True
+        else:
+            attempts += 1
+
+
 def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, log_folder=None,
              _progress=None):
     strategy = environment['strategy']
@@ -291,74 +280,52 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, l
             subscribed_junction = traci.junction.getIDList()[0]
             traci.junction.subscribeContext(subscribed_junction, tc.CMD_GET_VEHICLE_VARIABLE, 1000000,
                                             variables.values())
+            sim_data = {'n_steps': 0, 'subscribed_junction': subscribed_junction}
 
-            sim_data = {
-                'n_steps': 0,
-                'subscribed_junction': subscribed_junction
-            }
-
-            output["pref_street"] = ""
-            output['pref_street_name'] = ""
-            task_description = ""
-            for redirection in combination:
-                preferred_street = redirection['destination']
-                preferred_street_name = traci.edge.getStreetName(preferred_street)
-
-                output["pref_street"] += preferred_street + " "
-                output['pref_street_name'] += preferred_street_name + " "
-                task_description += f'{preferred_street} '
-                if gui:
+            if gui:
+                for redirection in combination:
                     mark_edge_selected(redirection['origin'])
-                    mark_edge_preferred(preferred_street)
+                    mark_edge_preferred(redirection['destination'])
 
             for edge in closed_edges:
-                if strategy == NAVIGATION:
-                    # close the streets in the first step if all vehicles know about street closure
-                    traci.edge.setAllowed(edge, 'authority')  # closed to regular traffic
+                traci.edge.setDisallowed(edge, 'custom1')
                 if gui:
                     mark_edge_closed(edge)
 
             simulated = 0
-
-            to_notify = []
+            affected = []
 
             while traci.simulation.getMinExpectedNumber() > 0:
                 for vehId in get_departed():
                     route = traci.vehicle.getRoute(vehId)
                     if set(route).intersection(closed_edges):  # route contains a closed edge
-                        if gui:
-                            set_vehicle_color(vehId, ORANGE)
+                        traci.vehicle.setVehicleClass(vehId, 'custom1')
+                        if strategy == NAVIGATION:  # TODO: change strategy by weight
+                            reroute_until_correct(vehId, combination, debug)
 
-                        if strategy == NAVIGATION:
-                            for redirection in combination:
-                                if redirection['origin'] in route:
-                                    if gui:
-                                        set_vehicle_color(vehId, RED)
-                                    traci.vehicle.setVia(vehId, redirection['destination'])
-                                    traci.vehicle.rerouteTraveltime(vehId)
-                                    break
+                            if gui:
+                                set_vehicle_color(vehId, RED)
                         elif strategy == SIGN:
-                            to_notify.append(vehId)
+                            affected.append(vehId)
+
+                            if gui:
+                                set_vehicle_color(vehId, ORANGE)
                     else:
                         if gui:
-                            # hides cars not affected by street closure
-                            set_vehicle_color(vehId, NONE)
+                            set_vehicle_color(vehId, NONE)  # hides cars not affected by street closure
 
                 if strategy == SIGN:
                     for redirection in combination:
                         for vehId in traci.edge.getLastStepVehicleIDs(redirection['origin']):
                             # TODO: this doesn't account for vehicles whose first edge is an origin/closed edge
-                            if vehId in to_notify:
-                                if gui:
-                                    set_vehicle_color(vehId, RED)
-                                avoid_multiple(vehId, closed_edges)
+                            if vehId in affected:
                                 traci.vehicle.setVia(vehId, redirection['destination'])
                                 traci.vehicle.rerouteTraveltime(vehId)
-                                to_notify.remove(vehId)
-                                break
 
-                # TODO: for both strategies, check the route of each vehicle until no redirection is needed ?
-                # TODO: change simulation management by keeping track of all vehicles currently in simulation ?
+                                if gui:
+                                    set_vehicle_color(vehId, RED)
+
+                                break
 
                 step_and_update(output, sim_data)
 
