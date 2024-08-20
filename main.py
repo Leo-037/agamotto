@@ -3,18 +3,21 @@ import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Annotated, Optional, List
+from typing import Annotated, Optional, List, Tuple
+
+import click
 import matplotlib.pyplot as plt
 
 import typer
 from rich import print as rprint
-from rich.console import Group
+from rich.console import Group, Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress, BarColumn, MofNCompleteColumn, TextColumn, TimeElapsedColumn
+from rich.table import Table
 
 from analysis import get_net_from_cfg, analyze_network, generate_combinations, pretty_combination
-from simulation import AvailableData, base_simulation, show_simulation, NAVIGATION, SIGN, batch_simulation
+from simulation import AvailableData, base_simulation, show_simulation, batch_simulation
 
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
@@ -76,6 +79,7 @@ def distribution(num, min_len, max_n_array):
 def main(config: Path,
          close: Annotated[Optional[List[str]], typer.Option()] = None,
          graph: Annotated[Optional[List[AvailableData]], typer.Option()] = None,
+         weight: Annotated[Optional[List[click.Tuple]], typer.Option(click_type=click.Tuple([int, int]))] = None,
          show_gui: bool = False, debug: bool = False,
          min_sim: int = 1, max_concurrent: int = os.cpu_count()):
     if config.is_dir():
@@ -97,6 +101,15 @@ def main(config: Path,
 
     closed_edges = close if close else []
 
+    if not weight:
+        weights = [(100, 0), (0, 100), (50, 50)]
+    else:
+        weights = weight
+    n_weights = len(weights)
+
+    console = Console()
+    console.print(f"Running with weights: {weights}")
+
     # GENERATE SIMULATION ENVIRONMENTS
 
     net_file = get_net_from_cfg(config)
@@ -104,8 +117,8 @@ def main(config: Path,
 
     environments = []
     for combination in generate_combinations(options):
-        environments.append({'strategy': NAVIGATION, 'combination': combination})
-        environments.append({'strategy': SIGN, 'combination': combination})
+        for w in weights:
+            environments.append({'weights': w, 'combination': combination})
 
     # RUN REFERENCE SIMULATION
 
@@ -113,7 +126,7 @@ def main(config: Path,
     baseline = {p: float(pre_result[p] if len(str(pre_result[p])) > 0 else 0) for p in parameters}
     total = pre_result["total"]
 
-    rprint("[blue]Completed reference simulation")
+    console.print("[blue]Completed reference simulation")
 
     # RUN PARALLEL SIMULATIONS
 
@@ -146,7 +159,7 @@ def main(config: Path,
                             task_latest = update_data['task_progress']
                             thread_progress.update(thread_id,
                                                    completed=task_latest,
-                                                   completed_sims=thread_latest)
+                                                   completed_sims=thread_latest + 1)
                             total_sims += thread_latest
                         overall_progress.update(overall_progress_id,
                                                 completed=total_sims, total=num)
@@ -165,7 +178,7 @@ def main(config: Path,
             for future in jobs:
                 result = future.result()
                 for v in result.values():
-                    x.append(f'{v["id"]}')
+                    x.append(f'{int(v["id"]) + 1}')
                     y.append(float(v[parameter]) if len(str(v[parameter])) > 0 else 0)
 
             sorted_x, sorted_y = zip(*sorted(zip(x, y), key=mysort))
@@ -178,24 +191,39 @@ def main(config: Path,
         plt.scatter(x_vals[0], y_vals[0], color="black")
 
         # Plot pairs of points with different colors
-        for i in range(2, len(x_vals) - 1, 2):
-            plt.scatter(x_vals[i:i + 2], y_vals[i:i + 2], color=f"C{i // 2 + 1}")
-            plt.axvspan(float(x_vals[i]) - 0.5, float(x_vals[i + 1]) + 0.5, color=f"C{i // 2 + 1}", alpha=0.1)
+        for i in range(1, len(x_vals) - (n_weights - 1), n_weights):
+            plt.scatter(x_vals[i:i + n_weights], y_vals[i:i + n_weights],
+                        color=f"C{i // n_weights}")
+            plt.axvspan(float(x_vals[i]) - 0.5, float(x_vals[i + n_weights - 1]) + 0.5,
+                        color=f"C{i // n_weights}", alpha=0.1)
 
         plt.axhline(y=baseline[parameter], color='black', linestyle='--')
 
         plt.title(parameter)
         plt.tight_layout()
-    plt.show()
+    plt.show(block=False)
 
-    print("")
-    for i in range(0, len(environments), 2):
+    # PRINT LEGEND
+
+    table = Table(title="")
+
+    for w in weights:
+        table.add_column(f"{w}", justify="center")
+    table.add_column("Combination", style="magenta")
+
+    for i in range(1, len(environments), n_weights):
         env = environments[i]
-        rprint(f'{i + 1} ([italic]NAV) | {i + 2} ([italic]SIGN) \t[default] {pretty_combination(env['combination'])}')
+        args = []
+        for w in range(n_weights):
+            args.append(f'{i + w}')
+        args.append(pretty_combination(env['combination']))
+        table.add_row(*args)
+
+    console.print(table)
 
     exited = False
     while not exited:
-        s = str(input(f"Choose a simulation to view (1-{len(environments)} / q to exit): "))
+        s = input(f"Choose a simulation to view (1-{len(environments)} / q to exit): ")
         if s.isdigit() and 0 <= int(s) < len(environments):
             show_simulation(config, 10, closed_edges, environments[int(s)])
         elif s in ["q", "Q"]:
@@ -209,5 +237,4 @@ def mysort(z):
 if __name__ == '__main__':
     app()
 
-# TODO: add weighted mode
 # TODO: improve retrieved data + generate heatmaps
