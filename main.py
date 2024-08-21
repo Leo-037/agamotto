@@ -2,10 +2,11 @@ import multiprocessing
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Optional, List, Tuple
+from typing import Annotated, Optional, List
+from click import Tuple
 
-import click
 import matplotlib.pyplot as plt
 
 import typer
@@ -17,6 +18,7 @@ from rich.progress import Progress, BarColumn, MofNCompleteColumn, TextColumn, T
 from rich.table import Table
 
 from analysis import get_net_from_cfg, analyze_network, generate_combinations, pretty_combination
+from plotting import Plotter, RunPlotter
 from simulation import AvailableData, base_simulation, show_simulation, batch_simulation
 
 if 'SUMO_HOME' in os.environ:
@@ -46,6 +48,13 @@ thread_progress = Progress(
 progress_group = Group(
     Panel(thread_progress), overall_progress,
 )
+plotting_progress = Progress(
+    "[progress.description]{task.description}",
+    BarColumn(),
+    MofNCompleteColumn(),
+    TextColumn("•"),
+    TimeElapsedColumn(),
+)
 
 
 def distribution(num, min_len, max_n_array):
@@ -74,12 +83,12 @@ def distribution(num, min_len, max_n_array):
 
     return distributed_array
 
-
 @app.command()
 def main(config: Path,
          close: Annotated[Optional[List[str]], typer.Option()] = None,
          graph: Annotated[Optional[List[AvailableData]], typer.Option()] = None,
-         weight: Annotated[Optional[List[click.Tuple]], typer.Option(click_type=click.Tuple([int, int]))] = None,
+         plot: Annotated[Optional[List[str]], typer.Option()] = None,
+         weight: Annotated[Optional[List[Tuple]], typer.Option(click_type=Tuple([int, int]))] = None,
          show_gui: bool = False, debug: bool = False,
          min_sim: int = 1, max_concurrent: int = os.cpu_count()):
     if config.is_dir():
@@ -130,11 +139,13 @@ def main(config: Path,
 
     # RUN PARALLEL SIMULATIONS
 
+    run_folder = f'./runs/{datetime.now().strftime('%Y-%m-%d_%H-%M')}'
+
     jobs = []
     num = len(environments)
     if num > 0:
         with Live(progress_group):
-            overall_progress_id = overall_progress.add_task("[green]Simulations progress:")
+            overall_progress_id = overall_progress.add_task("[green]Simulations progress:", total=len(environments))
 
             with multiprocessing.Manager() as manager:
                 _progress = manager.dict()
@@ -148,7 +159,7 @@ def main(config: Path,
                                                              completed_sims=0, total_sims=distributed[i])
                         jobs.append(
                             executor.submit(batch_simulation, config, delay, closed_edges, environments[start:end],
-                                            thread_id, start, _progress=_progress,
+                                            thread_id, start, run_folder, _progress=_progress,
                                             gui=show_gui, debug=debug))
                         start = end
 
@@ -203,6 +214,18 @@ def main(config: Path,
         plt.tight_layout()
     plt.show(block=False)
 
+    print()
+    if plot is not None:
+        with plotting_progress:
+            p_id = plotting_progress.add_task("[green]Plotting simulation results:", total=len(environments))
+            plotter = Plotter(run_folder, 'networks/bologna/osm.net.xml')
+            for r in range(len(environments)):
+                run_plotter = RunPlotter(plotter, r, organize='by_metric')
+                for p in plot:
+                    run_plotter.plot(p)
+                plotting_progress.advance(p_id)
+            plotting_progress.update(p_id, description="All simulations plotted")
+
     # PRINT LEGEND
 
     table = Table(title="")
@@ -219,6 +242,7 @@ def main(config: Path,
         args.append(pretty_combination(env['combination']))
         table.add_row(*args)
 
+    print()
     console.print(table)
 
     exited = False
@@ -236,5 +260,3 @@ def mysort(z):
 
 if __name__ == '__main__':
     app()
-
-# TODO: improve retrieved data + generate heatmaps

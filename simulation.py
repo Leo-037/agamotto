@@ -1,5 +1,4 @@
 import random
-from datetime import datetime
 import os
 import sys
 from enum import Enum
@@ -95,14 +94,20 @@ def prepare_output():
     }
 
 
-def get_sumo_command(config, delay, gui=False, auto=True):
+def get_sumo_command(config, delay, run_folder, index, gui=False, auto=True):
+    os.makedirs(os.path.dirname(f'{run_folder}/{index}/'), exist_ok=True)
     command = [
         "sumo-gui" if gui else "sumo",
         '-c', config,
         '--gui-settings-file', './config/agamotto.xml',
         '--delay', str(delay),
+        # '--no-step-log',
+        # '--verbose',
+        # '--duration-log.statistics',
         '--no-warnings',
-        '--no-step-log',
+        '--emission-output', f'{run_folder}/{index}/emission_output.xml',
+        '--summary-output', f'{run_folder}/{index}/summary_output.xml',
+        '--vehroute-output', f'{run_folder}/{index}/vehroute_output.xml',
     ]
     if auto:
         command.append('--start')
@@ -113,7 +118,7 @@ def get_sumo_command(config, delay, gui=False, auto=True):
 def start_simulation(config, delay, debug_file, gui=False, auto=True):
     sys.stdout = debug_file
 
-    command = get_sumo_command(config, delay, gui, auto)
+    command = get_sumo_command(config, delay, './runs/dump', -1, gui, auto)
 
     if traci.isLoaded():
         traci.load(command[1:])  # omit the name of the program because sumo is already running
@@ -153,29 +158,30 @@ def get_simulation_output(output, sim_data):
 
 
 def batch_simulation(config, delay, closed_edges, environments, thread_id, first_task_id,
+                     run_folder,
                      _progress=None, gui=False, debug=False):
-    sumo_command = get_sumo_command(config, delay, gui, auto=True)
-    log_folder = f'./logs/{datetime.now().strftime('%Y-%m-%d_%H:%M')}'
     if debug:
-        file_name = f'{log_folder}/sumo/{thread_id}.txt'
+        file_name = f'{run_folder}/sumo/{thread_id}.txt'
         os.makedirs(os.path.dirname(file_name), exist_ok=True)
         sumo_debug = open(file_name, 'w')
     else:
         sumo_debug = open(os.devnull, 'w')
 
     sys.stdout = sumo_debug
-    traci.start(sumo_command, stdout=sumo_debug)  # starts sumo and pipes all output to provided file
 
     task_id = first_task_id
 
+    # starts sumo and pipes all output to provided file
+    traci.start(get_sumo_command(config, delay, run_folder, task_id, gui, auto=True), stdout=sumo_debug)
+
     result = {
-        task_id: simulate(0, task_id, thread_id, closed_edges, environments[0], gui, debug, log_folder, _progress)
+        task_id: simulate(0, task_id, thread_id, closed_edges, environments[0], gui, debug, run_folder, _progress)
     }
 
     for i in range(1, len(environments)):
         task_id += 1
-        traci.load(sumo_command[1:])
-        result[task_id] = simulate(i, task_id, thread_id, closed_edges, environments[i], gui, debug, log_folder,
+        traci.load(get_sumo_command(config, delay, run_folder, task_id, gui, auto=True)[1:])
+        result[task_id] = simulate(i, task_id, thread_id, closed_edges, environments[i], gui, debug, run_folder,
                                    _progress)
 
     end_simulation()
@@ -185,9 +191,9 @@ def batch_simulation(config, delay, closed_edges, environments, thread_id, first
 
 
 def show_simulation(config, delay, closed_edges, environment):
-    command = get_sumo_command(config, delay, gui=True, auto=False)
+    command = get_sumo_command(config, delay, './runs/dump', -1, gui=True, auto=False)
     traci.start(command)
-    simulate(0, 0, 0, closed_edges, environment, gui=True, debug=False)
+    simulate(0, 0, 0, closed_edges, environment, True, False, './runs/dump')
     end_simulation()
 
 
@@ -255,7 +261,7 @@ def reroute_until_correct(veh, combination, gui=False, debug=False):
             attempts += 1
 
 
-def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, log_folder=None,
+def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, run_folder,
              _progress=None):
     weights = environment['weights']
     combination = environment['combination']
@@ -264,7 +270,7 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, l
     output["id"] = task_id
 
     if debug:
-        debug_file_name = f'{log_folder}/debug/{task_id}.txt'
+        debug_file_name = f'{run_folder}/{task_id}/logs.txt'
         os.makedirs(os.path.dirname(debug_file_name), exist_ok=True)
     else:
         debug_file_name = os.devnull
