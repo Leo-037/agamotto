@@ -1,9 +1,11 @@
 [tool.poetry]
+package-mode = false
 name = "agamotto"
-version = "0.1.0"
-description = "SUMO middleware to simulate traffic variations after a road closure"
+version = "1.0.0"
+description = "SUMO middleware to simulate various scenarios of traffic given a road closure"
 authors = ["Leonardo Baraldi <leonardo.baraldi@studio.unibo.it>"]
 readme = "README.md"
+license = "LICENSE.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
