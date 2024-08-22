@@ -21,13 +21,13 @@ class Plotter:
     summary_file_name = "summary_output.xml"
     emission_file_name = "emission_output.xml"
 
-    def __init__(self, run_dir, network_file, charts_dir_name='charts'):
-        self.global_run_dir = run_dir
+    def __init__(self, run_folder, network_file, charts_dir_name='charts'):
+        self.run_folder = run_folder
         self.net_file = network_file
         self.simulation_network = sumolib.net.readNet(network_file)
         self.grid_taz_file = self.generate_network_grid()
         self.grid_gdf = self.load_grid_gdf()
-        self.charts_dir = os.path.join(run_dir, charts_dir_name)
+        self.charts_dir = os.path.join(run_folder, charts_dir_name)
         os.makedirs(self.charts_dir, exist_ok=True)
 
     def parse_tazs_xml(self, xml_file):
@@ -157,13 +157,13 @@ class Plotter:
     def generate_network_grid(self, grid_width='150'):
         """ Divides the network in grid (150m x 150m) """
 
-        grid_filename = os.path.join(self.global_run_dir, "grid_district.taz.xml")
+        grid_filename = os.path.join(self.run_folder, "output", "grid_district.taz.xml")
 
         grid_options = ["python", os.path.join(SUMO_TOOLS, "district", "gridDistricts.py")]
         grid_options += ["-n", os.path.abspath(self.net_file)]
         grid_options += ["-o", os.path.abspath(grid_filename)]
         grid_options += ["-w", grid_width]
-        subprocess.call(grid_options, cwd=self.global_run_dir)
+        subprocess.call(grid_options, cwd=self.run_folder)
 
         return grid_filename
 
@@ -171,13 +171,13 @@ class Plotter:
         return self.parse_tazs_xml(self.grid_taz_file)
 
 
-class RunPlotter:
+class SimPlotter:
     CONTEXTILY_PROVIDER = cx.providers.OpenStreetMap.Mapnik
 
     def __init__(self, p: Plotter, index, organize="by_metric"):
         self.plotter = p
         self.index = index
-        self.run_folder = f'{p.global_run_dir}/{index}'
+        self.sim_folder = f'{p.run_folder}/output/{index}'
         self.gdf, self.point_in_grid = self.load_point_in_grid()
         self.organization = organize
         self.plot_methods = {
@@ -221,14 +221,14 @@ class RunPlotter:
         return file_path
 
     def load_point_in_grid(self):
-        xml_file_path = os.path.join(self.run_folder, self.plotter.emission_file_name)
+        xml_file_path = os.path.join(self.sim_folder, self.plotter.emission_file_name)
         gdf = self.plotter.parse_emission_data(xml_file_path)
         gdf = gdf.to_crs(epsg=4326)
 
         return gdf, gdf.sjoin(self.plotter.grid_gdf, how="inner").reset_index(drop=True)
 
     def generate_summary_plot(self):
-        xml_file_path = os.path.join(self.run_folder, self.plotter.summary_file_name)
+        xml_file_path = os.path.join(self.sim_folder, self.plotter.summary_file_name)
         summary_df = self.plotter.parse_summary_xml(xml_file_path)
         summary_df = summary_df.set_index("Time")
 
@@ -276,15 +276,3 @@ class RunPlotter:
 
         plt.tight_layout()
         plt.savefig(self.img_name(field))
-
-
-if __name__ == "__main__":
-    plotter = Plotter("runs/2024-08-20_18-54", 'networks/bologna/osm.net.xml',
-                      'networks/bologna/osm_district.taz.xml')
-    for r in range(5):
-        runPlotter = RunPlotter(plotter, r)
-        runPlotter.generate_summary_plot()
-        runPlotter.generate_traffic_plot()
-        runPlotter.generate_emission_plot(
-            [{'label': "CO2 emission rate per tile (mg/s)", 'field': "CO2", 'colormap': "Blues"},
-             {'label': "NOx emission rate per tile", 'field': "NOx", 'colormap': "Greens"}])

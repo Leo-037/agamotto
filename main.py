@@ -1,15 +1,15 @@
 import multiprocessing
 import os
+import shutil
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional, List
-from click import Tuple
 
 import matplotlib.pyplot as plt
-
 import typer
+from click import Tuple
 from rich import print as rprint
 from rich.console import Group, Console
 from rich.live import Live
@@ -18,8 +18,8 @@ from rich.progress import Progress, BarColumn, MofNCompleteColumn, TextColumn, T
 from rich.table import Table
 
 from analysis import get_net_from_cfg, analyze_network, generate_combinations, pretty_combination
-from plotting import Plotter, RunPlotter
-from simulation import AvailableData, base_simulation, show_simulation, batch_simulation
+from plotting import Plotter, SimPlotter
+from simulation import AvailableData, batch_simulation, show_simulation
 
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
@@ -83,6 +83,7 @@ def distribution(num, min_len, max_n_array):
 
     return distributed_array
 
+
 @app.command()
 def main(config: Path,
          close: Annotated[Optional[List[str]], typer.Option()] = None,
@@ -90,6 +91,7 @@ def main(config: Path,
          plot: Annotated[Optional[List[str]], typer.Option()] = None,
          weight: Annotated[Optional[List[Tuple]], typer.Option(click_type=Tuple([int, int]))] = None,
          show_gui: bool = False, debug: bool = False,
+         keep_output: bool = False,
          min_sim: int = 1, max_concurrent: int = os.cpu_count()):
     if config.is_dir():
         rprint("Config is a directory, should be a file")
@@ -99,11 +101,6 @@ def main(config: Path,
         raise typer.Abort()
     else:
         config = config.absolute()
-
-    if not graph:
-        parameters = [e for e in list(AvailableData.__members__)]
-    else:
-        parameters = graph
 
     concurrent = 1 if show_gui else max_concurrent
     delay = "3" if show_gui else "0"
@@ -124,38 +121,30 @@ def main(config: Path,
     net_file = get_net_from_cfg(config)
     options = analyze_network(net_file, closed_edges)
 
-    environments = []
+    environments = [{'weights': [], 'combination': []}]  # the reference simulation
     for combination in generate_combinations(options):
         for w in weights:
             environments.append({'weights': w, 'combination': combination})
 
-    # RUN REFERENCE SIMULATION
-
-    pre_result = base_simulation(config, 0, closed_edges, gui=show_gui, debug=False)
-    baseline = {p: float(pre_result[p] if len(str(pre_result[p])) > 0 else 0) for p in parameters}
-    total = pre_result["total"]
-
-    console.print("[blue]Completed reference simulation")
-
     # RUN PARALLEL SIMULATIONS
 
-    run_folder = f'./runs/{datetime.now().strftime('%Y-%m-%d_%H-%M')}'
+    run_folder = f'./runs/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}'
 
     jobs = []
-    num = len(environments)
-    if num > 0:
+    n_envs = len(environments)
+    if n_envs > 0:
         with Live(progress_group):
-            overall_progress_id = overall_progress.add_task("[green]Simulations progress:", total=len(environments))
+            overall_progress_id = overall_progress.add_task("[green]Simulations progress:", total=n_envs)
 
             with multiprocessing.Manager() as manager:
                 _progress = manager.dict()
 
                 with ProcessPoolExecutor(max_workers=concurrent) as executor:
-                    distributed = distribution(num, min_sim, concurrent)
+                    distributed = distribution(n_envs, min_sim, concurrent)
                     start = 0
                     for i in range(len(distributed)):
                         end = start + distributed[i]
-                        thread_id = thread_progress.add_task(f"Thread {i}", total=total,
+                        thread_id = thread_progress.add_task(f"Thread {i}", total=1,
                                                              completed_sims=0, total_sims=distributed[i])
                         jobs.append(
                             executor.submit(batch_simulation, config, delay, closed_edges, environments[start:end],
@@ -168,37 +157,38 @@ def main(config: Path,
                         for thread_id, update_data in _progress.items():
                             thread_latest = update_data["thread_progress"]
                             task_latest = update_data['task_progress']
+                            task_total = update_data['task_total']
+                            total_sims += thread_latest
                             thread_progress.update(thread_id,
                                                    completed=task_latest,
-                                                   completed_sims=thread_latest + 1)
-                            total_sims += thread_latest
+                                                   total=task_total,
+                                                   completed_sims=thread_latest + 1,
+                                                   visible=total_sims < n_envs)
                         overall_progress.update(overall_progress_id,
-                                                completed=total_sims, total=num)
+                                                completed=total_sims, total=n_envs)
 
             overall_progress.update(
-                overall_progress_id, description="All simulations completed", completed=num, total=num)
+                overall_progress_id, description="All simulations completed", completed=n_envs, total=n_envs)
 
     # PLOT RESULTS
 
-    for parameter in parameters:
+    for graph_type in graph:
         x = []
         y = []
-        x_vals = ["reference"]
-        y_vals = [baseline[parameter]]
-        if len(jobs) > 0:
-            for future in jobs:
-                result = future.result()
-                for v in result.values():
-                    x.append(f'{int(v["id"]) + 1}')
-                    y.append(float(v[parameter]) if len(str(v[parameter])) > 0 else 0)
+        for future in jobs:
+            result = future.result()
+            for k, v in result.items():
+                x.append(k)
+                y.append(float(v[graph_type]) if len(str(v[graph_type])) > 0 else 0)
 
-            sorted_x, sorted_y = zip(*sorted(zip(x, y), key=mysort))
-            x_vals.extend(list(sorted_x))
-            y_vals.extend(list(sorted_y))
+        sorted_x, sorted_y = zip(*sorted(zip(x, y), key=mysort))
+        x_vals = list(sorted_x)
+        y_vals = list(sorted_y)
 
         fig = plt.figure(figsize=(max(len(environments) / 4, 12), 6))
-        fig.canvas.manager.set_window_title(parameter)
+        fig.canvas.manager.set_window_title(graph_type)
 
+        x_vals[0] = 'reference'
         plt.scatter(x_vals[0], y_vals[0], color="black")
 
         # Plot pairs of points with different colors
@@ -208,33 +198,35 @@ def main(config: Path,
             plt.axvspan(float(x_vals[i]) - 0.5, float(x_vals[i + n_weights - 1]) + 0.5,
                         color=f"C{i // n_weights}", alpha=0.1)
 
-        plt.axhline(y=baseline[parameter], color='black', linestyle='--')
+        plt.axhline(y=y_vals[0], color='black', linestyle='--')
 
-        plt.title(parameter)
+        plt.title(graph_type)
         plt.tight_layout()
     plt.show(block=False)
 
     print()
     if plot is not None:
         with plotting_progress:
-            p_id = plotting_progress.add_task("[green]Plotting simulation results:", total=len(environments))
-            plotter = Plotter(run_folder, 'networks/bologna/osm.net.xml')
-            for r in range(len(environments)):
-                run_plotter = RunPlotter(plotter, r, organize='by_metric')
+            p_id = plotting_progress.add_task("[green]Plotting simulation results:", total=n_envs)
+            plotter = Plotter(run_folder, net_file)
+            for r in range(n_envs):
+                sim_plotter = SimPlotter(plotter, r, organize='by_metric')
                 for p in plot:
-                    run_plotter.plot(p)
+                    sim_plotter.plot(p)
                 plotting_progress.advance(p_id)
             plotting_progress.update(p_id, description="All simulations plotted")
+            if not keep_output:
+                remove_output_folder(run_folder)
 
     # PRINT LEGEND
 
-    table = Table(title="")
+    table = Table(title="Simulations", show_lines=True)
 
     for w in weights:
-        table.add_column(f"{w}", justify="center")
-    table.add_column("Combination", style="magenta")
+        table.add_column(f"{w}", justify="center", style="magenta")
+    table.add_column("Combination")
 
-    for i in range(1, len(environments), n_weights):
+    for i in range(1, n_envs, n_weights):
         env = environments[i]
         args = []
         for w in range(n_weights):
@@ -245,13 +237,23 @@ def main(config: Path,
     print()
     console.print(table)
 
+    # SHOW SIMULATION PROMPT
+
     exited = False
     while not exited:
-        s = input(f"Choose a simulation to view (1-{len(environments)} / q to exit): ")
+        s = input(f"Choose a simulation to view (0-{n_envs - 1} / q to exit): ")
         if s.isdigit() and 0 <= int(s) < len(environments):
-            show_simulation(config, 10, closed_edges, environments[int(s)])
+            show_simulation(config, 10, closed_edges, environments[int(s)], run_folder)
         elif s in ["q", "Q"]:
+            if not keep_output:
+                remove_output_folder(run_folder)
             exited = True
+
+
+def remove_output_folder(run_folder):
+    output_folder = os.path.join(run_folder, "output")
+    if os.path.exists(output_folder):
+        shutil.rmtree(output_folder)
 
 
 def mysort(z):

@@ -24,21 +24,6 @@ SIGN = 1
 STRATEGIES = [NAVIGATION, SIGN]
 
 
-def avoid_edge(veh_id, edge_id):
-    traci.vehicle.setAdaptedTraveltime(veh_id, edge_id, float('inf'))
-    traci.vehicle.rerouteTraveltime(veh_id)
-
-
-def prefer_edge(veh_id, edge_id):
-    traci.vehicle.setAdaptedTraveltime(veh_id, edge_id, float('-inf'))
-    traci.vehicle.rerouteTraveltime(veh_id)
-
-
-def avoid_multiple(veh_id, edge_list):
-    for edge in edge_list:
-        avoid_edge(veh_id, edge)
-
-
 def get_departed(filter_ids=None):
     if filter_ids is None:
         filter_ids = []
@@ -82,20 +67,9 @@ variables = {
 }
 
 
-def prepare_output():
-    return {
-        "CO2": 0,
-        "CO": 0,
-        "HC": 0,
-        "NOx": 0,
-        "PMx": 0,
-        "fuel": 0,
-        "noise": 0,
-    }
-
-
-def get_sumo_command(config, delay, run_folder, index, gui=False, auto=True):
-    os.makedirs(os.path.dirname(f'{run_folder}/{index}/'), exist_ok=True)
+def get_sumo_command(config, delay, run_folder, index, gui=False, auto=True, output=True):
+    dir_name = os.path.dirname(f'{run_folder}/output/{index}/')
+    os.makedirs(dir_name, exist_ok=True)
     command = [
         "sumo-gui" if gui else "sumo",
         '-c', config,
@@ -103,58 +77,20 @@ def get_sumo_command(config, delay, run_folder, index, gui=False, auto=True):
         '--delay', str(delay),
         # '--no-step-log',
         # '--verbose',
-        # '--duration-log.statistics',
+        '--duration-log.statistics',
         '--no-warnings',
-        '--emission-output', f'{run_folder}/{index}/emission_output.xml',
-        '--summary-output', f'{run_folder}/{index}/summary_output.xml',
-        '--vehroute-output', f'{run_folder}/{index}/vehroute_output.xml',
     ]
     if auto:
         command.append('--start')
         command.append('--quit-on-end')
+    if output:
+        command.append('--emission-output')
+        command.append(f'{dir_name}/emission_output.xml')
+        command.append('--summary-output')
+        command.append(f'{dir_name}/summary_output.xml')
+        command.append('--vehroute-output')
+        command.append(f'{dir_name}/vehroute_output.xml')
     return command
-
-
-def start_simulation(config, delay, debug_file, gui=False, auto=True):
-    sys.stdout = debug_file
-
-    command = get_sumo_command(config, delay, './runs/dump', -1, gui, auto)
-
-    if traci.isLoaded():
-        traci.load(command[1:])  # omit the name of the program because sumo is already running
-    else:
-        traci.start(command, stdout=debug_file)  # starts sumo and pipes all output to provided file
-
-    subscribed_junction = traci.junction.getIDList()[0]
-    traci.junction.subscribeContext(subscribed_junction, tc.CMD_GET_VEHICLE_VARIABLE, 1000000, variables.values())
-
-    data = {
-        'n_steps': 0,
-        'subscribed_junction': subscribed_junction
-    }
-    return data
-
-
-def step_and_update(output, sim_data):
-    traci.simulationStep()
-
-    sub_results = traci.junction.getContextSubscriptionResults(sim_data['subscribed_junction'])
-    if sub_results:
-        for (k, v) in variables.items():
-            new_values = [d[v] for d in sub_results.values()]
-            new_mean = sum(new_values) / len(new_values)
-            output[k] = (sim_data['n_steps'] * output[k] + new_mean) / (sim_data['n_steps'] + 1)
-
-    sim_data['n_steps'] += 1
-
-
-def get_simulation_output(output, sim_data):
-    output['duration'] = traci.simulation.getParameter("", "device.tripinfo.duration")
-    output['routeLength'] = traci.simulation.getParameter("", "device.tripinfo.routeLength")
-    output['waitingTime'] = traci.simulation.getParameter("", "device.tripinfo.waitingTime")
-    output['speed'] = traci.simulation.getParameter("", "device.tripinfo.speed")
-    output['timeloss'] = traci.simulation.getParameter("", "device.tripinfo.timeLoss")
-    output['totalTime'] = sim_data['n_steps'] * traci.simulation.getDeltaT()
 
 
 def batch_simulation(config, delay, closed_edges, environments, thread_id, first_task_id,
@@ -190,46 +126,11 @@ def batch_simulation(config, delay, closed_edges, environments, thread_id, first
     return result
 
 
-def show_simulation(config, delay, closed_edges, environment):
-    command = get_sumo_command(config, delay, './runs/dump', -1, gui=True, auto=False)
+def show_simulation(config, delay, closed_edges, environment, run_folder):
+    command = get_sumo_command(config, delay, run_folder, -1, gui=True, auto=False, output=False)
     traci.start(command)
-    simulate(0, 0, 0, closed_edges, environment, True, False, './runs/dump')
+    simulate(-1, -1, -1, closed_edges, environment, True, False, run_folder)
     end_simulation()
-
-
-def base_simulation(config, delay, closed_edges, gui=False, debug=False):
-    output = prepare_output()
-
-    with open(f'./logs/debug/base.txt' if debug else os.devnull, 'w') as debug_file:
-        try:
-            sim_data = start_simulation(config, delay, debug_file, gui=gui)
-
-            vehicles = []
-            affected = []
-
-            closed_edges = set(closed_edges)
-
-            while traci.simulation.getMinExpectedNumber() > 0:
-                for vehId in get_departed():
-                    vehicles.append(vehId)
-                    route = traci.vehicle.getRoute(vehId)
-
-                    if set(route).intersection(closed_edges):
-                        set_vehicle_color(vehId, ORANGE)
-                        affected.append(vehId)
-
-                step_and_update(output, sim_data)
-
-            get_simulation_output(output, sim_data)
-
-            end_simulation()
-
-            output['total'] = len(vehicles)
-
-        finally:
-            sys.stdout = sys.__stdout__
-
-    return output
 
 
 def reroute_until_correct(veh, combination, gui=False, debug=False):
@@ -265,12 +166,12 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
              _progress=None):
     weights = environment['weights']
     combination = environment['combination']
+    street_closed = len(weights) + len(combination) > 0
 
-    output = prepare_output()
-    output["id"] = task_id
+    output = {"id": task_id, "CO2": 0, "CO": 0, "HC": 0, "NOx": 0, "PMx": 0, "fuel": 0, "noise": 0}
 
     if debug:
-        debug_file_name = f'{run_folder}/{task_id}/logs.txt'
+        debug_file_name = f'{run_folder}/logs/{task_id}.txt'
         os.makedirs(os.path.dirname(debug_file_name), exist_ok=True)
     else:
         debug_file_name = os.devnull
@@ -281,7 +182,7 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
             subscribed_junction = traci.junction.getIDList()[0]
             traci.junction.subscribeContext(subscribed_junction, tc.CMD_GET_VEHICLE_VARIABLE, 1000000,
                                             variables.values())
-            sim_data = {'n_steps': 0, 'subscribed_junction': subscribed_junction}
+            n_steps = 0
 
             origins = set()
             for redirection in combination:
@@ -296,74 +197,86 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
                     mark_edge_closed(edge)
 
             simulated = 0
+            loaded = 0
             sign = []
 
             while traci.simulation.getMinExpectedNumber() > 0:
-                for vehId in get_departed():
-                    # strategy for road closure communication is chosen 
-                    # for each vehicle as soon as it is inserted in the simulation.
-                    strategy = random.choices(STRATEGIES, weights=weights, k=1)[0]
+                loaded += traci.simulation.getLoadedNumber()
+                if street_closed:
+                    for vehId in get_departed():
+                        # strategy for road closure communication is chosen
+                        # for each vehicle as soon as it is inserted in the simulation.
+                        strategy = random.choices(STRATEGIES, weights=weights, k=1)[0]
 
-                    # this user-reserved class disallows the vehicle on any closed edge,
-                    # but it will only have effect after rerouting
-                    traci.vehicle.setVehicleClass(vehId, 'custom1')
+                        # this user-reserved class disallows the vehicle on any closed edge,
+                        # but it will only have effect after rerouting
+                        traci.vehicle.setVehicleClass(vehId, 'custom1')
 
-                    route = traci.vehicle.getRoute(vehId)
-                    if route[0] in closed_edges:
-                        traci.vehicle.remove(vehId)
-                        print(f"Removed vehicle {vehId} because its first edge was closed")
-                        continue
-
-                    # if gui:
-                    #     # hide cars not affected by changes on the network
-                    #     set_vehicle_color(vehId, NONE)
-
-                    # some vehicles know a priori about road closures and deviations
-                    if strategy == NAVIGATION:
-
-                        affected = gui and set(route).intersection(closed_edges)
-
-                        # road closures will be avoided automatically after rerouting,
-                        # but road deviations need to be enforced "by hand"
-                        reroute_until_correct(vehId, combination, debug)
-
-                        if affected:
-                            # show that vehicle route was affected by street closure
-                            set_vehicle_color(vehId, RED)
-
-                    if strategy == SIGN:
-                        if set(route).intersection(origins):
-                            sign.append(vehId)
-                            set_vehicle_color(vehId, BLUE)
-
-                for vehId in sign:
-                    if vehId in traci.vehicle.getIDList():
                         route = traci.vehicle.getRoute(vehId)
-                        current = traci.vehicle.getRouteIndex(vehId)
-                        # TODO: losing some time on vehicles that are still on the same edge from last step
-                        for redirection in combination:
-                            if route[current] == redirection['origin']:
-                                traci.vehicle.setVia(vehId, redirection['destination'])
-                                traci.vehicle.rerouteTraveltime(vehId)
-
-                                if gui:
-                                    set_vehicle_color(vehId, GREEN)
-
-                                break
-
-                        # some combinations may create loops if vehicles can't reach their destination,
-                        # so we need to check for duplicate edges in the route
-                        new_route = traci.vehicle.getRoute(vehId)
-                        if len(set(new_route)) < len(new_route):
-                            # if all edges are unique, the set version of the array has the same length
-                            sign.remove(vehId)
+                        if route[0] in closed_edges:
                             traci.vehicle.remove(vehId)
-                            print(f"Removed vehicle {vehId} because it was in a loop")
+                            print(f"Removed vehicle {vehId} because its first edge was closed")
+                            continue
 
-                    else:
-                        sign.remove(vehId)
+                        # some vehicles know a priori about road closures and deviations
+                        if strategy == NAVIGATION:
 
-                step_and_update(output, sim_data)
+                            affected = gui and set(route).intersection(closed_edges)
+
+                            # road closures will be avoided automatically after rerouting,
+                            # but road deviations need to be enforced "by hand"
+                            reroute_until_correct(vehId, combination, debug)
+
+                            if affected:
+                                # show that vehicle route was affected by street closure
+                                set_vehicle_color(vehId, RED)
+
+                        if strategy == SIGN:
+                            if set(route).intersection(origins):
+                                sign.append(vehId)
+                                set_vehicle_color(vehId, BLUE)
+
+                    for vehId in sign:
+                        if vehId in traci.vehicle.getIDList():
+                            route = traci.vehicle.getRoute(vehId)
+                            current = traci.vehicle.getRouteIndex(vehId)
+                            # TODO: losing some time on vehicles that are still on the same edge from last step
+                            for redirection in combination:
+                                if route[current] == redirection['origin']:
+                                    traci.vehicle.setVia(vehId, redirection['destination'])
+                                    traci.vehicle.rerouteTraveltime(vehId)
+
+                                    if gui:
+                                        set_vehicle_color(vehId, GREEN)
+
+                                    break
+
+                            # some combinations may create loops if vehicles can't reach their destination,
+                            # so we need to check for duplicate edges in the route
+                            new_route = traci.vehicle.getRoute(vehId)
+                            if len(set(new_route)) < len(new_route):
+                                # if all edges are unique, the set version of the array has the same length
+                                sign.remove(vehId)
+                                traci.vehicle.remove(vehId)
+                                print(f"Removed vehicle {vehId} because it was in a loop")
+
+                        else:
+                            sign.remove(vehId)
+
+                # STEP AND UPDATE
+
+                traci.simulationStep()
+
+                sub_results = traci.junction.getContextSubscriptionResults(subscribed_junction)
+                if sub_results:
+                    for (k, v) in variables.items():
+                        new_values = [d[v] for d in sub_results.values()]
+                        new_mean = sum(new_values) / len(new_values)
+                        output[k] = (n_steps * output[k] + new_mean) / (n_steps + 1)
+
+                n_steps += 1
+
+                # UPDATE PROGRESS ON MAIN THREAD
 
                 if _progress is not None:
                     simulated += traci.simulation.getArrivedNumber()
@@ -371,9 +284,17 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
                         'thread_progress': index,
                         'task': task_id,
                         'task_progress': simulated,
+                        'task_total': loaded,
                     }
 
-            get_simulation_output(output, sim_data)
+            # RETRIEVE SIMULATION OUTPUT
+
+            output['duration'] = traci.simulation.getParameter("", "device.tripinfo.duration")
+            output['routeLength'] = traci.simulation.getParameter("", "device.tripinfo.routeLength")
+            output['waitingTime'] = traci.simulation.getParameter("", "device.tripinfo.waitingTime")
+            output['speed'] = traci.simulation.getParameter("", "device.tripinfo.speed")
+            output['timeloss'] = traci.simulation.getParameter("", "device.tripinfo.timeLoss")
+            output['totalTime'] = n_steps * traci.simulation.getDeltaT()
 
         finally:
             sys.stdout = sys.__stdout__
