@@ -90,8 +90,7 @@ def main(config: Path,
          graph: Annotated[Optional[List[AvailableData]], typer.Option()] = None,
          plot: Annotated[Optional[List[str]], typer.Option()] = None,
          weight: Annotated[Optional[List[Tuple]], typer.Option(click_type=Tuple([int, int]))] = None,
-         show_gui: bool = False, debug: bool = False,
-         keep_output: bool = False,
+         show_gui: bool = False, debug: bool = False, keep_output: bool = False, viewer: bool = False,
          min_sim: int = 1, max_concurrent: int = os.cpu_count()):
     if config.is_dir():
         rprint("Config is a directory, should be a file")
@@ -148,8 +147,8 @@ def main(config: Path,
                                                              completed_sims=0, total_sims=distributed[i])
                         jobs.append(
                             executor.submit(batch_simulation, config, delay, closed_edges, environments[start:end],
-                                            thread_id, start, run_folder, _progress=_progress,
-                                            gui=show_gui, debug=debug))
+                                            thread_id, start, run_folder, output=(plot is not None),
+                                            _progress=_progress, gui=show_gui, debug=debug))
                         start = end
 
                     while sum([future.done() for future in jobs]) < len(jobs):
@@ -170,42 +169,45 @@ def main(config: Path,
             overall_progress.update(
                 overall_progress_id, description="All simulations completed", completed=n_envs, total=n_envs)
 
-    # PLOT RESULTS
+    # PLOT COMPARISON RESULTS
+    if graph is not None:
+        comparisons_folder = os.path.join(run_folder, 'charts', 'comparisons')
+        os.makedirs(comparisons_folder, exist_ok=True)
+        for graph_type in graph:
+            x = []
+            y = []
+            for future in jobs:
+                result = future.result()
+                for k, v in result.items():
+                    x.append(k)
+                    y.append(float(v[graph_type]) if len(str(v[graph_type])) > 0 else 0)
 
-    for graph_type in graph:
-        x = []
-        y = []
-        for future in jobs:
-            result = future.result()
-            for k, v in result.items():
-                x.append(k)
-                y.append(float(v[graph_type]) if len(str(v[graph_type])) > 0 else 0)
+            sorted_x, sorted_y = zip(*sorted(zip(x, y), key=mysort))
+            x_vals = list(sorted_x)
+            y_vals = list(sorted_y)
 
-        sorted_x, sorted_y = zip(*sorted(zip(x, y), key=mysort))
-        x_vals = list(sorted_x)
-        y_vals = list(sorted_y)
+            fig = plt.figure(figsize=(max(len(environments) / 4, 12), 6))
+            fig.canvas.manager.set_window_title(graph_type)
 
-        fig = plt.figure(figsize=(max(len(environments) / 4, 12), 6))
-        fig.canvas.manager.set_window_title(graph_type)
+            x_vals[0] = 'reference'
+            plt.scatter(x_vals[0], y_vals[0], color="black")
 
-        x_vals[0] = 'reference'
-        plt.scatter(x_vals[0], y_vals[0], color="black")
+            # Plot pairs of points with different colors
+            for i in range(1, len(x_vals) - (n_weights - 1), n_weights):
+                plt.scatter(x_vals[i:i + n_weights], y_vals[i:i + n_weights],
+                            color=f"C{i // n_weights}")
+                plt.axvspan(float(x_vals[i]) - 0.5, float(x_vals[i + n_weights - 1]) + 0.5,
+                            color=f"C{i // n_weights}", alpha=0.1)
 
-        # Plot pairs of points with different colors
-        for i in range(1, len(x_vals) - (n_weights - 1), n_weights):
-            plt.scatter(x_vals[i:i + n_weights], y_vals[i:i + n_weights],
-                        color=f"C{i // n_weights}")
-            plt.axvspan(float(x_vals[i]) - 0.5, float(x_vals[i + n_weights - 1]) + 0.5,
-                        color=f"C{i // n_weights}", alpha=0.1)
+            plt.axhline(y=y_vals[0], color='black', linestyle='--')
 
-        plt.axhline(y=y_vals[0], color='black', linestyle='--')
+            plt.title(graph_type)
+            plt.tight_layout()
+            plt.savefig(f'{comparisons_folder}/{graph_type}.png')
 
-        plt.title(graph_type)
-        plt.tight_layout()
-    plt.show(block=False)
-
-    print()
+    # PLOT FOR EACH SIMULATION
     if plot is not None:
+        print()
         with plotting_progress:
             p_id = plotting_progress.add_task("[green]Plotting simulation results:", total=n_envs)
             plotter = Plotter(run_folder, net_file)
@@ -218,36 +220,37 @@ def main(config: Path,
             if not keep_output:
                 remove_output_folder(run_folder)
 
-    # PRINT LEGEND
+    # SHOW SIMULATION CHOOSER
+    if viewer:
+        table = Table(title="Simulations", show_lines=True)
 
-    table = Table(title="Simulations", show_lines=True)
+        for w in weights:
+            table.add_column(f"{w[0]}/{w[1]}", justify="center", style="magenta")
+        table.add_column("Combination")
 
-    for w in weights:
-        table.add_column(f"{w}", justify="center", style="magenta")
-    table.add_column("Combination")
+        for i in range(1, n_envs, n_weights):
+            env = environments[i]
+            args = []
+            for w in range(n_weights):
+                args.append(f'{i + w}')
+            args.append(pretty_combination(env['combination']))
+            table.add_row(*args)
 
-    for i in range(1, n_envs, n_weights):
-        env = environments[i]
-        args = []
-        for w in range(n_weights):
-            args.append(f'{i + w}')
-        args.append(pretty_combination(env['combination']))
-        table.add_row(*args)
+        print()
+        console.print(table)
 
-    print()
-    console.print(table)
+        # SHOW SIMULATION PROMPT
 
-    # SHOW SIMULATION PROMPT
+        exited = False
+        while not exited:
+            s = input(f"Choose a simulation to view (0-{n_envs - 1} / q to exit): ")
+            if s.isdigit() and 0 <= int(s) < len(environments):
+                show_simulation(config, 10, closed_edges, environments[int(s)], run_folder)
+            elif s in ["q", "Q"]:
+                exited = True
 
-    exited = False
-    while not exited:
-        s = input(f"Choose a simulation to view (0-{n_envs - 1} / q to exit): ")
-        if s.isdigit() and 0 <= int(s) < len(environments):
-            show_simulation(config, 10, closed_edges, environments[int(s)], run_folder)
-        elif s in ["q", "Q"]:
-            if not keep_output:
-                remove_output_folder(run_folder)
-            exited = True
+    if not keep_output:
+        remove_output_folder(run_folder)
 
 
 def remove_output_folder(run_folder):

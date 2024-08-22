@@ -94,7 +94,7 @@ def get_sumo_command(config, delay, run_folder, index, gui=False, auto=True, out
 
 
 def batch_simulation(config, delay, closed_edges, environments, thread_id, first_task_id,
-                     run_folder,
+                     run_folder, output=True,
                      _progress=None, gui=False, debug=False):
     if debug:
         file_name = f'{run_folder}/sumo/{thread_id}.txt'
@@ -108,7 +108,7 @@ def batch_simulation(config, delay, closed_edges, environments, thread_id, first
     task_id = first_task_id
 
     # starts sumo and pipes all output to provided file
-    traci.start(get_sumo_command(config, delay, run_folder, task_id, gui, auto=True), stdout=sumo_debug)
+    traci.start(get_sumo_command(config, delay, run_folder, task_id, gui, auto=True, output=output), stdout=sumo_debug)
 
     result = {
         task_id: simulate(0, task_id, thread_id, closed_edges, environments[0], gui, debug, run_folder, _progress)
@@ -116,7 +116,7 @@ def batch_simulation(config, delay, closed_edges, environments, thread_id, first
 
     for i in range(1, len(environments)):
         task_id += 1
-        traci.load(get_sumo_command(config, delay, run_folder, task_id, gui, auto=True)[1:])
+        traci.load(get_sumo_command(config, delay, run_folder, task_id, gui, auto=True, output=output)[1:])
         result[task_id] = simulate(i, task_id, thread_id, closed_edges, environments[i], gui, debug, run_folder,
                                    _progress)
 
@@ -127,7 +127,7 @@ def batch_simulation(config, delay, closed_edges, environments, thread_id, first
 
 
 def show_simulation(config, delay, closed_edges, environment, run_folder):
-    command = get_sumo_command(config, delay, run_folder, -1, gui=True, auto=False, output=False)
+    command = get_sumo_command(config, delay, run_folder, -1, gui=True, auto=True, output=False)
     traci.start(command)
     simulate(-1, -1, -1, closed_edges, environment, True, False, run_folder)
     end_simulation()
