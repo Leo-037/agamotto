@@ -147,7 +147,7 @@ def main(config: Path,
                                                              completed_sims=0, total_sims=distributed[i])
                         jobs.append(
                             executor.submit(batch_simulation, config, delay, closed_edges, environments[start:end],
-                                            thread_id, start, run_folder, output=(plot is not None),
+                                            thread_id, start, run_folder, output=(plot is not None or keep_output),
                                             _progress=_progress, gui=show_gui, debug=debug))
                         start = end
 
@@ -211,10 +211,16 @@ def main(config: Path,
         with plotting_progress:
             p_id = plotting_progress.add_task("[green]Plotting simulation results:", total=n_envs)
             plotter = Plotter(run_folder, net_file)
-            for r in range(n_envs):
+
+            base_plotter = SimPlotter(plotter, 0, organize='by_metric')
+            for p in plot:
+                base_plotter.plot(p)
+            plotting_progress.advance(p_id)
+
+            for r in range(1, n_envs):
                 sim_plotter = SimPlotter(plotter, r, organize='by_metric')
                 for p in plot:
-                    sim_plotter.plot(p)
+                    sim_plotter.plot(p, compare_with=base_plotter)
                 plotting_progress.advance(p_id)
             plotting_progress.update(p_id, description="All simulations plotted")
             if not keep_output:

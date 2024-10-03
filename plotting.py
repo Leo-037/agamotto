@@ -2,13 +2,17 @@ import os
 import subprocess
 import sys
 from functools import partial
+from typing import Self
 
-import contextily as cx
-import geopandas as gpd
-import pandas as pd
+import contextily
+import geopandas
+import pandas
 import sumolib
+from geopandas import GeoDataFrame
 from lxml import etree
 from matplotlib import pyplot as plt
+from pandas import DataFrame
+from pandas.core.groupby import DataFrameGroupBy
 from shapely.geometry import Polygon
 
 SUMO_HOME = os.environ.get("SUMO_HOME", None)
@@ -30,8 +34,23 @@ class Plotter:
         self.charts_dir = os.path.join(run_folder, charts_dir_name)
         os.makedirs(self.charts_dir, exist_ok=True)
 
-    def parse_tazs_xml(self, xml_file):
-        root = etree.parse(xml_file, parser=self.parser).getroot()
+    def generate_network_grid(self, grid_width='150') -> str:
+        """ Divides the network in a grid (150m x 150m), then returns the generated file name """
+
+        grid_filename = os.path.join(self.run_folder, "output", "grid_district.taz.xml")
+
+        grid_options = ["python", os.path.join(SUMO_TOOLS, "district", "gridDistricts.py")]
+        grid_options += ["-n", os.path.abspath(self.net_file)]
+        grid_options += ["-o", os.path.abspath(grid_filename)]
+        grid_options += ["-w", grid_width]
+        subprocess.call(grid_options, cwd=self.run_folder)
+
+        return grid_filename
+
+    def load_grid_gdf(self) -> GeoDataFrame:
+        """ Parses the network grid file and returns it as a GeoDataFrame """
+
+        root = etree.parse(self.grid_taz_file, parser=self.parser).getroot()
         taz_list = []
 
         for taz_element in root.findall("taz"):
@@ -41,16 +60,14 @@ class Plotter:
             shapes = [shapes[i:i + 2] for i in range(0, len(shapes), 2)]
             shapes = [self.simulation_network.convertXY2LonLat(i[0], i[1]) for i in shapes]
 
-            shapes = Polygon(shapes)
+            taz_list.append(Polygon(shapes))
 
-            taz_list.append(shapes)
-
-        gdf = gpd.GeoDataFrame(taz_list, columns=["geometry"], geometry="geometry", crs=4326)
-        gdf["grid_geom"] = gdf["geometry"]
+        gdf = geopandas.GeoDataFrame(taz_list, columns=["geometry"], geometry="geometry", crs=4326)
+        gdf["grid_geom"] = gdf["geometry"]  # duplicate the column with a new name
 
         return gdf
 
-    def parse_summary_xml(self, xml_file):
+    def parse_summary_xml(self, xml_file) -> DataFrame:
         root = etree.parse(xml_file, parser=self.parser)
 
         # Initialize lists to store parsed data
@@ -91,7 +108,7 @@ class Plotter:
             duration_list.append(int(step.attrib['duration']))
 
         # Create a DataFrame from the extracted data
-        df = pd.DataFrame({
+        df = pandas.DataFrame({
             'Time': time_list,
             'Loaded': loaded_list,
             'Inserted': inserted_list,
@@ -112,7 +129,9 @@ class Plotter:
 
         return df
 
-    def parse_emission_data(self, xml_file):
+    def parse_emission_data(self, xml_file) -> GeoDataFrame:
+        """ returns a GeoDataFrame containing all emission data parsed from the correspondent file """
+
         tree = etree.parse(xml_file, parser=self.parser)
         root = tree.getroot()
 
@@ -149,45 +168,32 @@ class Plotter:
                 }
                 rows.append(vehicle_data)
 
-        gdf = gpd.GeoDataFrame(rows,
-                               geometry=gpd.points_from_xy([row['lon'] for row in rows], [row['lat'] for row in rows]),
-                               crs="4326")
+        # add geometry column to the DataFrame
+        gdf = geopandas.GeoDataFrame(rows,
+                                     geometry=geopandas.points_from_xy([row['lon'] for row in rows],
+                                                                       [row['lat'] for row in rows]),
+                                     crs="4326")
         return gdf
-
-    def generate_network_grid(self, grid_width='150'):
-        """ Divides the network in grid (150m x 150m) """
-
-        grid_filename = os.path.join(self.run_folder, "output", "grid_district.taz.xml")
-
-        grid_options = ["python", os.path.join(SUMO_TOOLS, "district", "gridDistricts.py")]
-        grid_options += ["-n", os.path.abspath(self.net_file)]
-        grid_options += ["-o", os.path.abspath(grid_filename)]
-        grid_options += ["-w", grid_width]
-        subprocess.call(grid_options, cwd=self.run_folder)
-
-        return grid_filename
-
-    def load_grid_gdf(self):
-        return self.parse_tazs_xml(self.grid_taz_file)
 
 
 class SimPlotter:
-    CONTEXTILY_PROVIDER = cx.providers.OpenStreetMap.Mapnik
+    CONTEXTILY_PROVIDER = contextily.providers.OpenStreetMap.Mapnik
 
     def __init__(self, p: Plotter, index, organize="by_metric"):
         self.plotter = p
         self.index = index
         self.sim_folder = f'{p.run_folder}/output/{index}'
-        self.gdf, self.point_in_grid = self.load_point_in_grid()
+        self.emission_gdf = self.load_emission_gdf()
+        self.gdf_grouped_by_grid = self.add_grid_geom_to_gdf(self.emission_gdf)
         self.organization = organize
         self.plot_methods = {
             'summary': self.generate_summary_plot,
             'traffic': self.generate_traffic_plot,
-            'CO2': partial(self.generate_emission_plot, field='CO2', label='CO2 emission rate per tile (mg/s)'),
-            'CO': partial(self.generate_emission_plot, field='CO', label='CO emission rate per tile'),
-            'HC': partial(self.generate_emission_plot, field='HC', label='HC emission rate per tile'),
-            'NOx': partial(self.generate_emission_plot, field='NOx', label='NOx emission rate per tile'),
-            'PMx': partial(self.generate_emission_plot, field='PMx', label='PMx emission rate per tile'),
+            'co2': partial(self.generate_emission_plot, field='CO2', label='CO2 emission rate per tile (mg/s)'),
+            'co': partial(self.generate_emission_plot, field='CO', label='CO emission rate per tile'),
+            'hc': partial(self.generate_emission_plot, field='HC', label='HC emission rate per tile'),
+            'nox': partial(self.generate_emission_plot, field='NOx', label='NOx emission rate per tile'),
+            'pmx': partial(self.generate_emission_plot, field='PMx', label='PMx emission rate per tile'),
             'fuel': partial(self.generate_emission_plot, field='fuel', label='fuel emission rate per tile'),
             'electricity': partial(self.generate_emission_plot, field='electricity',
                                    label='electricity emission rate per tile'),
@@ -197,9 +203,9 @@ class SimPlotter:
     def available_plots(self):
         return list(self.plot_methods.keys())
 
-    def plot(self, kind):
-        if kind in self.plot_methods:
-            self.plot_methods[kind]()
+    def plot(self, kind, compare_with=None):
+        if kind.lower() in self.plot_methods:
+            self.plot_methods[kind.lower()](compare_with=compare_with)
         else:
             raise ValueError(f"Plot kind '{kind}' is not supported.")
 
@@ -220,12 +226,21 @@ class SimPlotter:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         return file_path
 
-    def load_point_in_grid(self):
+    def load_emission_gdf(self):
         xml_file_path = os.path.join(self.sim_folder, self.plotter.emission_file_name)
         gdf = self.plotter.parse_emission_data(xml_file_path)
         gdf = gdf.to_crs(epsg=4326)
 
-        return gdf, gdf.sjoin(self.plotter.grid_gdf, how="inner").reset_index(drop=True)
+        return gdf
+
+    def add_grid_geom_to_gdf(self, gdf) -> DataFrameGroupBy:
+        """
+        Joins the given GeoDataFrame to the grid network one,
+        according to 'geometry' column (the only one they share)
+        Returns the gdf grouped by grid_geom
+        """
+
+        return gdf.sjoin(self.plotter.grid_gdf, how="inner").reset_index(drop=True).groupby(by=["grid_geom"])
 
     def generate_summary_plot(self):
         xml_file_path = os.path.join(self.sim_folder, self.plotter.summary_file_name)
@@ -247,32 +262,50 @@ class SimPlotter:
         plt.tight_layout()
         plt.savefig(self.img_name('summary'))
 
-    def generate_traffic_plot(self):
-        vehicle_density = self.point_in_grid.groupby(by=["grid_geom"])["vehicle_id"].nunique().reset_index()
-        vehicle_density = gpd.GeoDataFrame(vehicle_density, geometry="grid_geom")
-        vehicle_density = vehicle_density.set_crs(epsg=4326)
-
-        vehicle_density = vehicle_density.to_crs(epsg=3857)
-        legend = dict(label='Number of vehicles per tile')
-        ax = vehicle_density.plot(column="vehicle_id", legend=True, alpha=0.7, cmap="Reds", legend_kwds=legend, vmin=0,
-                                  vmax=100)
-        cx.add_basemap(ax, attribution_size=0, source=self.CONTEXTILY_PROVIDER, alpha=0.7)
-        ax.set_axis_off()
-
-        plt.tight_layout()
-        plt.savefig(self.img_name('traffic'))
-
-    def generate_emission_plot(self, field, label, colormap="Greens"):
-        column = f"{field}_average"
-        emission_results = self.point_in_grid.groupby(by="grid_geom")[field].sum().reset_index()
-        emission_results[column] = emission_results[field] / self.gdf["time"].iloc[-1]
-        emission_results = gpd.GeoDataFrame(emission_results, crs=self.gdf.crs, geometry="grid_geom")
-
-        emission_results = emission_results.to_crs(epsg=3857)
+    def save_heatmap(self, data, label, column, colormap, name):
         legend = dict(label=label)
-        ax = emission_results.plot(column=column, legend=True, alpha=0.7, cmap=colormap, legend_kwds=legend)
-        cx.add_basemap(ax, attribution_size=0, source=self.CONTEXTILY_PROVIDER, alpha=0.7)
+        ax = data.to_crs(epsg=3857).plot(column=column, legend=True, alpha=0.7, cmap=colormap, legend_kwds=legend)
+        contextily.add_basemap(ax, attribution_size=0, source=self.CONTEXTILY_PROVIDER, alpha=0.7)
         ax.set_axis_off()
 
         plt.tight_layout()
-        plt.savefig(self.img_name(field))
+        plt.savefig(self.img_name(name))
+        plt.close()
+
+    def get_traffic_density(self):
+        # counts all unique vehicle ids in each square
+        return self.gdf_grouped_by_grid["vehicle_id"].nunique().reset_index().copy(deep=True)
+
+    def get_emission_density(self, field, column):
+        emission_density = self.gdf_grouped_by_grid[field].sum().reset_index().copy(deep=True)
+        emission_density[column] = emission_density[field] / self.emission_gdf["time"].iloc[-1]
+        return emission_density
+
+    def generate_traffic_plot(self, compare_with: Self = None):
+        vehicle_density = self.get_traffic_density()
+        vehicle_density_gd = geopandas.GeoDataFrame(vehicle_density, geometry="grid_geom", crs="EPSG:4326")
+
+        self.save_heatmap(vehicle_density_gd, 'Number of vehicles per tile', 'vehicle_id', 'Reds', 'traffic')
+
+        if compare_with is not None:
+            vehicle_density['vehicle_id'] = vehicle_density['vehicle_id'] - compare_with.get_traffic_density()[
+                'vehicle_id']
+            delta_gd = geopandas.GeoDataFrame(vehicle_density, geometry="grid_geom", crs="EPSG:4326")
+
+            self.save_heatmap(delta_gd, f'Delta of vehicles per tile compared to #{compare_with.index}',
+                              'vehicle_id', 'coolwarm', 'traffic_comparison')
+
+    def generate_emission_plot(self, field, label, colormap="Greens", compare_with: Self = None):
+        column = f"{field}_average"
+        emission_density = self.get_emission_density(field, column)
+        emission_results_gd = geopandas.GeoDataFrame(emission_density, crs=self.emission_gdf.crs, geometry="grid_geom")
+
+        self.save_heatmap(emission_results_gd, label, column, colormap, field)
+
+        if compare_with is not None:
+            emission_density[column] = emission_density[column] - compare_with.get_emission_density(field, column)[
+                column]
+            delta_gd = geopandas.GeoDataFrame(emission_density, geometry="grid_geom", crs="EPSG:4326")
+
+            self.save_heatmap(delta_gd, f'{label} delta compared to #{compare_with.index}',
+                              column, 'PRGn', f"{field}_comparison")
