@@ -204,6 +204,13 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
                 loaded += traci.simulation.getLoadedNumber()
                 if street_closed:
                     for vehId in get_departed():
+
+                        route = traci.vehicle.getRoute(vehId)
+                        if route[0] in closed_edges:
+                            traci.vehicle.remove(vehId)
+                            print(f"Removed vehicle {vehId} because its first edge was closed")
+                            continue
+
                         # strategy for road closure communication is chosen
                         # for each vehicle as soon as it is inserted in the simulation.
                         strategy = random.choices(STRATEGIES, weights=weights, k=1)[0]
@@ -212,16 +219,10 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
                         # but it will only have effect after rerouting
                         traci.vehicle.setVehicleClass(vehId, 'custom1')
 
-                        route = traci.vehicle.getRoute(vehId)
-                        if route[0] in closed_edges:
-                            traci.vehicle.remove(vehId)
-                            print(f"Removed vehicle {vehId} because its first edge was closed")
-                            continue
-
                         # some vehicles know a priori about road closures and deviations
                         if strategy == NAVIGATION:
 
-                            affected = gui and set(route).intersection(closed_edges)
+                            affected = gui and not set(route).isdisjoint(closed_edges)
 
                             # road closures will be avoided automatically after rerouting,
                             # but road deviations need to be enforced "by hand"
@@ -232,7 +233,7 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
                                 set_vehicle_color(vehId, RED)
 
                         if strategy == SIGN:
-                            if set(route).intersection(origins):
+                            if not set(route).isdisjoint(origins):
                                 sign.append(vehId)
                                 set_vehicle_color(vehId, BLUE)
 
@@ -254,8 +255,9 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
                             # some combinations may create loops if vehicles can't reach their destination,
                             # so we need to check for duplicate edges in the route
                             new_route = traci.vehicle.getRoute(vehId)
+
+                            # if all edges are unique, the set version of the array has the same length
                             if len(set(new_route)) < len(new_route):
-                                # if all edges are unique, the set version of the array has the same length
                                 sign.remove(vehId)
                                 traci.vehicle.remove(vehId)
                                 print(f"Removed vehicle {vehId} because it was in a loop")

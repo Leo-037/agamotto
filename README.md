@@ -97,7 +97,7 @@ Example:
 
 ---
 
-#### Show all simulations on SUMO GUI in sequence
+#### Show all simulations in SUMO GUI in sequence
 Use: `--show-gui` / `--no-show-gui`  
 Default: `--no-show-gui`
 
@@ -164,7 +164,7 @@ Example:
 ---
 
 #### Define the maximum number of threads to use
-Use: `--max-concurrent`  
+Use: `--max-concurrent INT`  
 Default: number of cores on the cpu as per `os.cpucount()`  
 
 In combination with `min-sim`, defines how simulations are distributed on the available threads.
