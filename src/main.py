@@ -169,6 +169,15 @@ def main(config: Path,
             overall_progress.update(
                 overall_progress_id, description="All simulations completed", completed=n_envs, total=n_envs)
 
+    # SAVE RESULTS TO FILE
+    with open(f"{run_folder}/results.txt", "w") as results_file:
+        for future in jobs:
+            result = future.result()
+            for run, output in result.items():
+                results_file.write(f"\n----- Simulation #{run} -----\n\n")
+                for metric, value in output.items():
+                    results_file.write(f"{metric}: {value}\n")
+
     # PLOT COMPARISON RESULTS
     if graph is not None:
         comparisons_folder = os.path.join(run_folder, 'charts', 'comparisons')

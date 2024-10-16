@@ -157,9 +157,11 @@ def reroute_until_correct(veh, combination, gui=False, debug=False):
             # give up after a while: there's no way to enforce all destinations, keep current route
             if debug:
                 print(f'Stopping after attempt #{attempts} to route vehicle {veh}: no way to enforce combination')
-            correct = True
+            return False
         else:
             attempts += 1
+
+    return True
 
 
 def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, run_folder,
@@ -168,7 +170,8 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
     combination = environment['combination']
     street_closed = len(weights) + len(combination) > 0
 
-    output = {"id": task_id, "CO2": 0, "CO": 0, "HC": 0, "NOx": 0, "PMx": 0, "fuel": 0, "noise": 0}
+    output = {"id": task_id, "CO2": 0, "CO": 0, "HC": 0, "NOx": 0, "PMx": 0, "fuel": 0, "noise": 0,
+              'deleted_no_reroute': 0, 'deleted_edge_loop': 0}
 
     if debug:
         debug_file_name = f'{run_folder}/logs/{task_id}.txt'
@@ -226,7 +229,10 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
 
                             # road closures will be avoided automatically after rerouting,
                             # but road deviations need to be enforced "by hand"
-                            reroute_until_correct(vehId, combination, debug)
+                            rerouted = reroute_until_correct(vehId, combination, debug)
+
+                            if not rerouted:
+                                output["deleted_no_reroute"] += 1
 
                             if affected:
                                 # show that vehicle route was affected by street closure
@@ -260,6 +266,7 @@ def simulate(index, task_id, thread_id, closed_edges, environment, gui, debug, r
                             if len(set(new_route)) < len(new_route):
                                 sign.remove(vehId)
                                 traci.vehicle.remove(vehId)
+                                output["deleted_edge_loop"] += 1
                                 print(f"Removed vehicle {vehId} because it was in a loop")
 
                         else:
